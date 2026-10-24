@@ -81,7 +81,9 @@ cargo run --release -p winder-app                               # a new Strat de
 cargo run --release -p winder-app -- designs/strat-vintage.toml # or open a file
 ```
 
-Every parameter sits in the panel on the left, grouped into cards
+The buttons at the top of the panel start from a kind of pickup (Strat,
+Tele bridge, Tele neck, Humbucker, P-90) with its real bobbin, wire and
+usual turns. Every parameter sits in the panel on the left, grouped into cards
 (Winding, Bobbin, Wire, Speed, Rules, Wire path, Estimate inputs, Notes).
 Edits change the coil straight away, and Ctrl+Z / Ctrl+Y (or the Undo and
 Redo buttons) step back and forward. What the coil measures is on the right.

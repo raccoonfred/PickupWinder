@@ -76,9 +76,9 @@ impl WinderApp {
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> WinderApp {
         chrome::fusion_style(&cc.egui_ctx);
         let mut app = WinderApp {
-            design: Design::simple("strat").expect("preset exists"),
+            design: Design::pickup("strat").expect("preset exists"),
             path: None,
-            saved: Design::simple("strat").expect("preset exists"),
+            saved: Design::pickup("strat").expect("preset exists"),
             profile: MachineProfile::default(),
             profile_path: None,
             computed: None,
@@ -102,7 +102,7 @@ impl WinderApp {
             imported: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
-            committed: Design::simple("strat").expect("preset exists"),
+            committed: Design::pickup("strat").expect("preset exists"),
             lay_window: None,
             pinned: None,
             selected: None,
@@ -248,13 +248,28 @@ impl WinderApp {
     // ---------- files ----------
 
     fn new_from(&mut self, preset: &str) {
-        if let Some(d) = Design::simple(preset) {
+        if let Some(d) = Design::pickup(preset) {
             self.design = d.clone();
             self.saved = d;
             self.path = None;
             self.prev = None;
             self.follow_end = true;
             self.status = format!("New design from the {preset} preset.");
+        }
+    }
+
+    /// Start over from a kind of pickup; undo goes back.
+    fn switch_to(&mut self, preset: &str) {
+        if let Some(d) = Design::pickup(preset) {
+            self.design = d;
+            self.path = None;
+            self.prev = None;
+            self.follow_end = true;
+            self.lay_window = None;
+            self.status = format!(
+                "Switched to {}. Ctrl+Z goes back to what you had.",
+                preset_label(preset)
+            );
         }
     }
 
@@ -510,6 +525,22 @@ impl WinderApp {
                             .desired_width(f32::INFINITY),
                     );
                 });
+                // Kinds of pickup, one click each.
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for p in Bobbin::preset_names() {
+                        let on = Design::pickup(p)
+                            .is_some_and(|d| d.bobbin.style == self.design.bobbin.style);
+                        if ui
+                            .selectable_label(on, preset_label(p))
+                            .on_hover_text(preset_hint(p))
+                            .clicked()
+                        {
+                            self.switch_to(p);
+                        }
+                    }
+                });
+                ui.add_space(2.0);
                 let names: String = formula::names()
                     .iter()
                     .map(|(n, v, what)| format!("{n} = {v:.4}   {what}"))
@@ -527,7 +558,7 @@ impl WinderApp {
                 ui.add_space(4.0);
                 let total = self.design.total_turns();
                 let pattern = match self.design.sections.as_slice() {
-                    [one] => title_case(one.pattern.label()),
+                    [one] => pattern_name(&one.pattern).to_string(),
                     many => format!("{} sections", many.len()),
                 };
                 card(
@@ -566,14 +597,14 @@ impl WinderApp {
                 } else {
                     "off"
                 };
-                card(ui, "Rules", rules, false, |ui| {
+                card(ui, "Automatic", rules, false, |ui| {
                     editor::auto(ui, &mut self.design)
                 });
-                let span = format!("{:.0} mm span", self.design.lay.free_span_mm);
-                card(ui, "Wire path", &span, false, |ui| {
+                let span = format!("{:.0} mm away", self.design.lay.free_span_mm);
+                card(ui, "Guide", &span, false, |ui| {
                     editor::wire_path(ui, &mut self.design)
                 });
-                card(ui, "Estimate inputs", "", false, |ui| {
+                card(ui, "Estimate settings", "", false, |ui| {
                     editor::estimate(ui, &mut self.design)
                 });
                 card(ui, "Notes", "", false, |ui| {
@@ -597,7 +628,7 @@ impl WinderApp {
             .map(|_| auto::fill_index(&self.design));
         for i in 0..self.design.sections.len() {
             let s = &self.design.sections[i];
-            let title = format!("{}  {}", i + 1, title_case(s.pattern.label()));
+            let title = format!("{}  {}", i + 1, pattern_name(&s.pattern));
             let detail = if fill == Some(i) {
                 format!("{} turns · auto", s.turns)
             } else {
@@ -641,8 +672,8 @@ impl WinderApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Add").color(chrome::MUTED));
             for (label, kind) in [
-                ("Layer", Kind::Layer),
-                ("Helix", Kind::Helix),
+                ("Neat layers", Kind::Layer),
+                ("Machine", Kind::Helix),
                 ("Scatter", Kind::Scatter),
             ] {
                 if ui.small_button(label).clicked() {
@@ -997,7 +1028,7 @@ impl WinderApp {
                     Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), vec2(16.0, 13.0));
                 chrome::draw_icon(&p, pattern_icon(&s.pattern), icon);
             }
-            let label = format!("{} {}", title_case(s.pattern.label()), s.turns);
+            let label = format!("{} {}", pattern_name(&s.pattern), s.turns);
             let galley = p.layout_no_wrap(label, FontId::proportional(11.0), chrome::INK);
             if galley.size().x + 34.0 < r.width() {
                 p.galley(
@@ -1132,27 +1163,29 @@ fn pattern_color(p: &Pattern) -> Color32 {
 
 fn section_summary(i: usize, s: &winder_core::Section) -> String {
     let how = match &s.pattern {
-        Pattern::Layer { .. } => "perfect layers".to_string(),
-        Pattern::Helix { tpl } => format!("{tpl:.0} turns per pass"),
+        Pattern::Layer { .. } => "neat layers".to_string(),
+        Pattern::Helix { tpl } => format!("{tpl:.0} turns per sweep"),
         Pattern::Scatter {
             tpl_min, tpl_max, ..
         } => {
-            format!("{tpl_min:.0}–{tpl_max:.0} turns per pass")
+            format!("{tpl_min:.0}–{tpl_max:.0} turns per sweep")
         }
     };
     format!(
         "{}. {} · {} turns · {how}\nClick to open it in the panel; right-click for more",
         i + 1,
-        title_case(s.pattern.label()),
+        pattern_name(&s.pattern),
         s.turns
     )
 }
 
-fn title_case(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+/// What a pattern is called in the app.
+fn pattern_name(p: &Pattern) -> &'static str {
+    match p {
+        Pattern::Layer { .. } => "Neat layers",
+        Pattern::Helix { .. } => "Machine",
+        Pattern::Scatter { .. } => "Scatter",
+    }
 }
 
 fn views_title(v: View) -> &'static str {
@@ -1222,6 +1255,7 @@ impl eframe::App for WinderApp {
             .resizable(true)
             .default_size(340.0)
             .min_size(280.0)
+            .max_size(480.0)
             .show(ui, |ui| self.parameters(ui));
         egui::Panel::right("results")
             .frame(bar(chrome::PANEL, (10, 8)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
@@ -1413,4 +1447,29 @@ fn metrics(d: &Design, c: &Computed) -> Vec<Metric> {
             1,
         ),
     ]
+}
+
+fn preset_label(p: &str) -> &'static str {
+    match p {
+        "strat" => "Strat",
+        "tele-bridge" => "Tele bridge",
+        "tele-neck" => "Tele neck",
+        "paf" => "Humbucker",
+        "p90" => "P-90",
+        _ => "Other",
+    }
+}
+
+fn preset_hint(p: &str) -> String {
+    match Design::pickup(p) {
+        Some(d) => format!(
+            "{}: {} turns of {}, scatter wound, on a {:.1} × {:.1} mm core",
+            d.name,
+            d.total_turns(),
+            d.wire_spec().map(|w| w.name).unwrap_or_default(),
+            d.bobbin.core_length_mm,
+            d.bobbin.core_width_mm
+        ),
+        None => String::new(),
+    }
 }

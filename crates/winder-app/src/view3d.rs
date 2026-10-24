@@ -18,7 +18,7 @@ use std::{
     f32::consts::{FRAC_PI_2, PI},
     sync::{Arc, Mutex},
 };
-use winder_core::Design;
+use winder_core::{Design, Direction};
 
 /// What a left-drag does in the 3D view, picked on the navigation bar.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -338,18 +338,32 @@ impl Geometry {
         let turns = cross.turn_count();
 
         let us = core.samples();
+        // Counter-clockwise coils are the mirror image (see `Feed::mirrored`).
+        let flip = if d.direction == Direction::Ccw {
+            -1.0
+        } else {
+            1.0
+        };
         let mut pts: Vec<([f32; 3], [f32; 3], f32)> = Vec::with_capacity(turns * us.len() + 1);
         for n in 0..turns {
             for &u in &us {
                 let (y, z) = lay_at(cross, n, u);
                 let (p, nn) = core.at(u, z);
-                pts.push(([p[0], y, p[1]], [nn[0], 0.0, nn[1]], n as f32 + u));
+                pts.push((
+                    [p[0], y, p[1] * flip],
+                    [nn[0], 0.0, nn[1] * flip],
+                    n as f32 + u,
+                ));
             }
         }
         if turns > 0 {
             let (y, z) = lay_at(cross, turns - 1, 0.9999);
             let (p, nn) = core.at(0.9999, z);
-            pts.push(([p[0], y, p[1]], [nn[0], 0.0, nn[1]], turns as f32));
+            pts.push((
+                [p[0], y, p[1] * flip],
+                [nn[0], 0.0, nn[1] * flip],
+                turns as f32,
+            ));
         }
         let mut wire = Vec::with_capacity(pts.len() * 2 * WIRE_STRIDE);
         strip(&mut wire, &pts);
@@ -1176,12 +1190,33 @@ impl Feed {
         };
         // The guide is where the toolpath has it at this moment.
         let eyelet = [eyelet[0], guide_at(c, drawn) as f32, eyelet[2]];
-        Feed {
+        let feed = Feed {
             theta,
             dir: if a1 >= a0 { -1.0 } else { 1.0 },
             eyelet,
             contact: spun([p[0], y, p[1]], theta),
             drawn,
+        };
+        if d.direction == Direction::Ccw {
+            feed.mirrored(guide_angle)
+        } else {
+            feed
+        }
+    }
+
+    /// The same moment wound the other way. A counter-clockwise coil is the
+    /// mirror image of a clockwise one, so the scene is reflected across the
+    /// plane through the spindle and the eyelet: the eyelet stays where it
+    /// is, the spindle turns the other way and the wire meets the coil on
+    /// the bobbin's other side. (The coil is drawn mirrored to match.)
+    fn mirrored(self, guide_angle: f32) -> Feed {
+        let (s2, c2) = (2.0 * guide_angle).sin_cos();
+        let [x, y, z] = self.contact;
+        Feed {
+            theta: 2.0 * guide_angle - self.theta,
+            dir: -self.dir,
+            contact: [x * c2 + z * s2, y, x * s2 - z * c2],
+            ..self
         }
     }
 
@@ -1336,7 +1371,18 @@ mod tests {
 
     #[test]
     fn wire_reaches_the_coil_on_a_tangent_from_the_eyelet() {
-        let d = Design::example("strat").unwrap();
+        // And counter-clockwise turns the spindle the other way.
+        let cw = tangent_from_the_eyelet(Direction::Cw);
+        let ccw = tangent_from_the_eyelet(Direction::Ccw);
+        assert_eq!(cw, -ccw);
+    }
+
+    /// Checks the feed one way round, and says which way the spindle turns.
+    fn tangent_from_the_eyelet(dir: Direction) -> f32 {
+        let mut d = Design::example("strat").unwrap();
+        d.direction = dir;
+        let flip = if dir == Direction::Ccw { -1.0 } else { 1.0 };
+        let mut spins = Vec::new();
         let c = Computed::new(&d).unwrap();
         let g = Geometry::build(&d, &c);
         let (r, a) = (g.parts.guide_r, g.parts.guide_angle);
@@ -1344,6 +1390,7 @@ mod tests {
         let mut last = None;
         for (turn, phase) in [(10.0, 0.1), (10.0, 0.3), (1234.0, 0.6), (4000.0, 0.95)] {
             let f = Feed::at(&d, &c, turn, phase, r, a);
+            spins.push(f.dir);
             // A later moment never lays less wire.
             if let Some((t, dr)) = last
                 && t == turn
@@ -1361,15 +1408,24 @@ mod tests {
             let (_, z) = lay_at(&c.cross, n, u);
             let (p0, _) = core.at(u, z);
             let (p1, _) = core.at(u + 1e-3, z);
-            let t = spun([p1[0] - p0[0], 0.0, p1[1] - p0[1]], f.theta);
+            let t = spun([p1[0] - p0[0], 0.0, (p1[1] - p0[1]) * flip], f.theta);
+            // The contact is on the (mirrored) coil as drawn.
+            let on = spun([p0[0], 0.0, p0[1] * flip], f.theta);
+            assert!(
+                (on[0] - f.contact[0]).abs() < 0.05 && (on[2] - f.contact[2]).abs() < 0.05,
+                "{dir:?} upto {upto}"
+            );
             let w = [f.contact[0] - f.eyelet[0], 0.0, f.contact[2] - f.eyelet[2]];
             let (lt, lw) = (
                 (t[0] * t[0] + t[2] * t[2]).sqrt(),
                 (w[0] * w[0] + w[2] * w[2]).sqrt(),
             );
             let cos = (t[0] * w[0] + t[2] * w[2]) / (lt * lw);
-            assert!(cos > 0.995, "upto {upto}: cos {cos}");
+            assert!(cos > 0.995, "{dir:?} upto {upto}: cos {cos}");
         }
+        // The spindle turns one way all through.
+        assert!(spins.iter().all(|&s| s == spins[0]));
+        spins[0]
     }
 
     #[test]

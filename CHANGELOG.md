@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never closer than one wire per turn. Without it a scatter pass is a
   steady sweep, as a helix is.
 - Playback at 0.1× and 0.25×.
+- **Pickup presets**: Strat, Tele bridge, Tele neck, Humbucker and P-90
+  at the top of the panel, each with its real bobbin, wire and usual turns
+  (`Design::pickup`). Switching can be undone.
+- Plain-language names: neat layers / machine / scatter, turns per sweep
+  shown as "wires apart", winding width, max coil thickness, guide to coil
+  (was free span) with an explanation, and a hint on every field.
 - **Formulas** in every number field (`side * 0.6`, `channel / od`, …).
 - **Compare**: pin the design as A and see how far each result moves as
   you edit, then go back to A if you like.
@@ -39,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn drawn where it landed.
 
 ### Fixed
+- Counter-clockwise now winds the other way in 3D: the spindle turns the
+  other way, the coil is the mirror image and the wire meets it on the
+  bobbin's other side.
 - The spindle turns exactly with the turn count at every playback speed,
   and is drawn motion-blurred when it turns faster than the screen can
   show.

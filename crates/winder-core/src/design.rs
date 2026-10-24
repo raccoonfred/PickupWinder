@@ -372,6 +372,36 @@ impl Design {
         })
     }
 
+    /// A complete starting point for a kind of pickup: its real bobbin, the
+    /// wire and turns it is usually wound with, as one scatter winding.
+    /// Names as `Bobbin::preset_names`.
+    pub fn pickup(preset: &str) -> Option<Design> {
+        // (wire, turns, name). Vintage-style counts: Strat ~8k of 42; Tele
+        // bridge ~9k of 42; Tele neck ~8k of 43; PAF ~5k of 42 per coil;
+        // P-90 ~10k of 42.
+        let (wire, turns, name) = match preset {
+            "strat" => ("42 AWG", 8000, "Strat single coil"),
+            "tele-bridge" => ("42 AWG", 9000, "Tele bridge"),
+            "tele-neck" => ("43 AWG", 8000, "Tele neck"),
+            "paf" => ("42 AWG", 5000, "Humbucker (PAF), one coil"),
+            "p90" => ("42 AWG", 10000, "P-90"),
+            _ => return None,
+        };
+        let mut d = Design::simple(preset)?;
+        let full = d.bobbin.channel_height_mm / WireSpec::named(wire)?.od_mm;
+        d.name = name.into();
+        d.wire = WireRef::Named(wire.into());
+        d.sections[0].turns = turns;
+        if let Pattern::Scatter {
+            tpl_min, tpl_max, ..
+        } = &mut d.sections[0].pattern
+        {
+            *tpl_min = (full * 0.55).round();
+            *tpl_max = (full * 0.85).round();
+        }
+        Some(d)
+    }
+
     /// The plain version of `example`: one scattered winding, the way most
     /// pickups are wound. Sections can be added later for a perfect-layer
     /// base or cover.
@@ -483,6 +513,19 @@ fn migrate_v1(table: &mut toml::Table) -> Result<(), DesignError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pickup_preset_is_valid() {
+        for p in Bobbin::preset_names() {
+            let d = Design::pickup(p).unwrap();
+            d.validate().unwrap();
+            assert_eq!(d.sections.len(), 1);
+        }
+        assert_eq!(
+            Design::pickup("tele-neck").unwrap().wire,
+            WireRef::Named("43 AWG".into())
+        );
+    }
 
     #[test]
     fn simple_is_one_winding_of_the_same_turns() {
