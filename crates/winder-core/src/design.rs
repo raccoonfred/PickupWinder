@@ -376,12 +376,13 @@ impl Design {
     /// wire and turns it is usually wound with, as one scatter winding.
     /// Names as `Bobbin::preset_names`.
     pub fn pickup(preset: &str) -> Option<Design> {
-        // (wire, turns, name). Vintage-style counts: Strat ~8k of 42; Tele
-        // bridge ~9k of 42; Tele neck ~8k of 43; PAF ~5k of 42 per coil;
-        // P-90 ~10k of 42.
+        // (wire, turns, name). Vintage counts: Strat ~8k of 42 (5.8-6.3k);
+        // Tele bridge ~9.2k of 42 (7.0-7.8k); Tele neck ~8k of 43 (7.3-8.1k);
+        // PAF ~5k of 42 per coil (about 4k each, 8k the pair); P-90 ~10k
+        // of 42.
         let (wire, turns, name) = match preset {
             "strat" => ("42 AWG", 8000, "Strat single coil"),
-            "tele-bridge" => ("42 AWG", 9000, "Tele bridge"),
+            "tele-bridge" => ("42 AWG", 9200, "Tele bridge"),
             "tele-neck" => ("43 AWG", 8000, "Tele neck"),
             "paf" => ("42 AWG", 5000, "Humbucker (PAF), one coil"),
             "p90" => ("42 AWG", 10000, "P-90"),

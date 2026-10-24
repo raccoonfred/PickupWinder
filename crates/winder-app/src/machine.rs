@@ -225,17 +225,20 @@ pub fn usual(b: &Bobbin, depth: f32) -> Dims {
     let (flange_length, flange_width, flange_corner, top_thickness, bottom_thickness) =
         match b.style {
             Style::Strat => (l + 11.0, d + 0.8, d * 0.42, 1.6, 2.4),
-            Style::TeleBridge => (l + 12.0, d + 1.5, 4.0, 1.6, 1.6),
+            // Top flatwork 19.6 mm wide over a 72 x 38 mm base with ears.
+            Style::TeleBridge => (l + 12.0, d + 0.85, 4.0, 1.6, 1.6),
             Style::TeleNeck => (l + 8.0, d + 1.0, d * 0.45, 1.6, 1.6),
-            Style::Humbucker => (l + 10.0, d, 1.5, 1.6, 1.6),
-            Style::P90 => (l + 10.0, d + 1.0, 4.0, 1.6, 1.6),
+            // PAF: 66.7 x 17.5 x 9.5 mm over a 55.6 x 6.35 mm core.
+            Style::Humbucker => (l + 11.1, d, 1.0, 1.57, 1.57),
+            // P-90: 1.2" (30.5 mm) wide, 0.375" (9.5 mm) high.
+            Style::P90 => (l + 11.0, d + 1.15, 3.0, 1.25, 1.25),
             Style::Generic => (l + 2.0 * depth + 3.0, d + 3.0, r_core + depth, 1.6, 1.6),
         };
     let (pole_count, pole_spread, pole_diameter, pole_height) = match b.style {
         Style::Strat => (6, l - w, w, 3.2),
         Style::TeleBridge | Style::TeleNeck => (6, l - w, w, 0.8),
-        Style::Humbucker => (6, (l - w).min(49.2), 5.0, 1.4),
-        Style::P90 => (6, (l - w).min(49.2), 4.8, 1.4),
+        Style::Humbucker => (6, 49.2, 5.0, 1.4),
+        Style::P90 => (6, 49.2, 4.8, 1.4),
         Style::Generic => (0, l - w, w.min(5.0), 1.0),
     };
     Dims {
@@ -331,10 +334,11 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
             }
         }
         Style::Humbucker | Style::P90 => {
-            // Moulded core wall, then pole screws through the top.
+            // Moulded core wall. It is wound empty: the pole screws go in
+            // afterwards, so the top shows their holes.
             let core = rounded_rect(l, w, r_core);
             spin.prism(&core, 0.0, h, PLASTIC);
-            screws(&mut spin, &dm, h + t_top);
+            holes(&mut top, &dm, h + t_top);
             if b.style == Style::P90 {
                 // Mounting ears at each end.
                 for s in [-1.0f32, 1.0] {
@@ -450,6 +454,13 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
         guide_r,
         guide_angle,
         length,
+    }
+}
+
+/// Pole holes in a moulded top flange whose top is at `y`.
+fn holes(top: &mut Mesh, dm: &Dims, y: f32) {
+    for (_, x) in poles(dm.pole_count, dm.pole_spread) {
+        top.cylinder(x, 0.0, dm.pole_diameter / 2.0, y - 0.02, y + 0.03, HOLE);
     }
 }
 

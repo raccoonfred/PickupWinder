@@ -145,7 +145,7 @@ impl Bobbin {
                 core_width_mm: p.width,
                 core_length_mm: p.length,
                 build_depth_mm: p.depth,
-                corner_radius_mm: p.width / 2.0,
+                corner_radius_mm: p.corner,
                 style: p.style,
                 detail: Detail::default(),
             })
@@ -163,6 +163,9 @@ struct Preset {
     depth: f64,
     width: f64,
     length: f64,
+    /// Round-ended (half the width) where the wire wraps rod magnets; a
+    /// moulded core is a rectangle with slightly eased corners.
+    corner: f64,
 }
 
 /// Real bobbins, all mm.
@@ -174,11 +177,15 @@ struct Preset {
 ///   wide on a Strat, leaving about 6 mm to build. The '54 Strat measures
 ///   0.718" overall with 0.064" and 0.097" flatwork, so about 11-12 mm
 ///   between the plates.
-/// - A PAF coil's core is 2.20-2.25" by 0.255" (56-57 by 6.5 mm), 0.248"
-///   (6.3 mm) between the flanges, in a 0.69" (17.6 mm) wide bobbin: about
-///   5.5 mm to build (Music Electronics Forum, "PAF bobbin dimensions").
-/// - A P-90 bobbin is 3.19" by 1.2" by 0.375" over its ears; it winds wide
-///   and shallow round a core about 59 by 12.7 mm.
+/// - A PAF bobbin is 2.625" by 0.6875" by 0.375" (66.7 by 17.5 by 9.5
+///   mm) round a rectangular core of 2.1875" by 0.25" (55.6 by 6.35 mm),
+///   0.25" (6.35 mm) between the flanges, with 0.219" (5.55 mm) to build
+///   (Music Electronics Forum, "Mojotone butyrate humbucker bobbins").
+/// - A P-90 bobbin is 3.19" by 1.2" by 0.375" (81 by 30.5 by 9.5 mm) over
+///   its ears. Its core is narrow, just round the pole screws (about 56 by
+///   6.4 mm), and the coil winds wide and flat out to the 30.5 mm edge:
+///   about 11.5 mm to build and 7 mm between the flanges. 10,000 turns of
+///   42 then come to about 8.5 kΩ, as vintage P-90s measure.
 const PRESETS: &[Preset] = &[
     Preset {
         name: "strat",
@@ -187,6 +194,7 @@ const PRESETS: &[Preset] = &[
         depth: 6.0,
         width: 4.9,
         length: 56.9,
+        corner: 2.45,
     },
     Preset {
         name: "tele-bridge",
@@ -195,6 +203,7 @@ const PRESETS: &[Preset] = &[
         depth: 7.0,
         width: 4.75,
         length: 59.75,
+        corner: 2.375,
     },
     Preset {
         name: "tele-neck",
@@ -203,22 +212,25 @@ const PRESETS: &[Preset] = &[
         depth: 4.5,
         width: 4.75,
         length: 54.75,
+        corner: 2.375,
     },
     Preset {
         name: "paf",
         style: Style::Humbucker,
-        channel: 6.3,
-        depth: 5.5,
-        width: 6.5,
-        length: 56.5,
+        channel: 6.35,
+        depth: 5.55,
+        width: 6.35,
+        length: 55.6,
+        corner: 0.8,
     },
     Preset {
         name: "p90",
         style: Style::P90,
         channel: 7.0,
-        depth: 7.5,
-        width: 12.7,
-        length: 59.0,
+        depth: 11.5,
+        width: 6.35,
+        length: 55.9,
+        corner: 0.8,
     },
 ];
 

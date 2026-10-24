@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn drawn where it landed.
 
 ### Fixed
+- Presets checked against published bobbin sizes: humbucker and P-90
+  cores are rectangles, not round-ended like single coils. PAF bobbin
+  66.7 × 17.5 × 9.5 mm round a 55.6 × 6.35 mm core; P-90 a narrow core
+  with a wide, flat coil out to 30.5 mm (10,000 turns of 42 now give about
+  8.1 kΩ). Moulded bobbins show their pole holes, as they are wound before
+  the screws go in. Tele bridge preset winds 9,200 turns. `winder new`
+  starts from the same presets as the editor.
 - Counter-clockwise now winds the other way in 3D: the spindle turns the
   other way, the coil is the mirror image and the wire meets it on the
   bobbin's other side.

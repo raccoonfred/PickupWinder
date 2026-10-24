@@ -82,7 +82,7 @@ type Res = Result<(), String>;
 fn run(cmd: Cmd) -> Res {
     match cmd {
         Cmd::New { preset, out } => {
-            let d = Design::example(&preset).ok_or_else(|| {
+            let d = Design::pickup(&preset).ok_or_else(|| {
                 let names: Vec<_> = Bobbin::preset_names().collect();
                 format!("unknown preset \"{preset}\" (try: {})", names.join(", "))
             })?;
