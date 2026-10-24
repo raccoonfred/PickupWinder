@@ -29,7 +29,9 @@ impl Default for MachineProfile {
             spindle_steps_per_turn: 1600.0,
             traverse_steps_per_mm: 200.0,
             max_rpm: 1000.0,
-            flange_offset_mm: 0.0,
+            // The traverse switch trips about 10 mm short of the near flange;
+            // `winder calibrate` measures the exact value per bobbin type.
+            flange_offset_mm: 10.0,
             homing: Homing::Probe {
                 toward_mm: -20.0,
                 feed_mm_min: 120.0,
