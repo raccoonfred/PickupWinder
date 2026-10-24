@@ -1,0 +1,39 @@
+# Vintage-style Strat single-coil: clean base, scattered body, clean cover.
+#   winder sim designs/strat-vintage.toml
+#   winder gcode designs/strat-vintage.toml -o strat.nc
+version = 1
+name = "Vintage Strat"
+wire = "42 AWG"            # or a [wire] table with name, od_mm, bare_mm, ohm_per_m
+direction = "cw"           # cw | ccw (seen from the front of the bobbin)
+
+[bobbin]
+channel_height_mm = 11.0   # flange to flange, along the traverse
+core_width_mm = 16.0
+core_length_mm = 46.0
+build_depth_mm = 6.0
+
+[speed]
+rpm = 420
+ramp_turns = 50            # soft start and soft stop
+ramp_start_rpm = 60
+
+# Inputs to the DCR / tone estimate that the toolpath doesn't decide.
+[estimate]
+pack = 0.92
+scatter = 12
+tension_g = 35             # leave out to use `pack` directly
+temp_c = 20
+
+# Pitches are in wire diameters per turn: 1.0 lays each turn beside the last.
+[[sections]]
+turns = 200
+pattern = { kind = "layer", pitch_od = 1.0 }
+
+[[sections]]
+turns = 7600
+pattern = { kind = "scatter", pitch_min_od = 1.2, pitch_max_od = 1.8, inset_max_mm = 0.3, seed = 1234 }
+dwell_turns = 0.5          # turns laid in place at each reversal
+
+[[sections]]
+turns = 200
+pattern = { kind = "layer", pitch_od = 1.0 }
