@@ -5,9 +5,11 @@
 //! on the right.
 
 mod app;
+mod chrome;
 mod editor;
 mod model;
 mod view3d;
+mod viewcube;
 mod views;
 
 fn main() -> eframe::Result {

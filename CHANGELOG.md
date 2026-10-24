@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The editor now looks and moves like Fusion 360.** It has a light theme,
+  a toolbar of CREATE / INSPECT / MAKE groups and a floating Browser. Edit
+  dialogs have OK and Cancel. The timeline shows the sections sized by
+  turns, with playback, scrubbing and a right-click menu. Properties floats
+  on the right.
+- **3D navigation and the ViewCube work as in Fusion and Autodesk.**
+  - Scroll zooms at the pointer, middle-drag pans and Shift + middle-drag
+    orbits.
+  - The navigation bar has Orbit, Pan, Zoom, Fit and Home, and switches
+    between perspective and orthographic.
+  - The ViewCube turns with the model and has 26 clickable views (faces,
+    edges and corners) with highlight on hover. It also has a draggable
+    compass ring, a home button and arrows to the next face. Moves are
+    animated.
 - **The coil is shown in 3D.** The editor's main view now draws the bobbin
   and the whole wire as one continuous copper strand, every turn where the
   lay model put it, with OpenGL and a depth buffer. Orbit, pan and zoom down

@@ -80,14 +80,33 @@ designs/         example designs
 cargo run --release -p winder-app -- designs/strat-vintage.toml
 ```
 
-Edit the bobbin, wire, speed and the stack of winding sections on the left.
-The middle shows the result, recomputed as you type:
+The editor is laid out like Fusion 360. The toolbar has three groups:
+**CREATE** adds a layer, helix or scatter section, **INSPECT** picks the
+view, and **MAKE** exports G-code or loads a machine profile. The
+**Browser** floats over the canvas on the left. Click a node (bobbin, wire,
+speed, wire path, estimate inputs or a section) to open its edit dialog.
+Changes show live, OK keeps them and Cancel or Esc puts them back. The
+**timeline** along the bottom shows the sections as features, sized by
+their turns. Drag it to scrub the wind and play it back at 1× to 1000×
+speed. Double-click a section to edit it, or right-click it to duplicate,
+move or delete it. **Properties** floats on the right.
 
-- **Coil 3D** (the default): the bobbin and its flatwork, with every turn
+- **3D** (the default) shows the bobbin and its flatwork, with every turn
   drawn as round copper wire around the core, exactly where the lay model
-  put it. Drag to turn it, right-drag to move, scroll to zoom right down onto
-  the wire; the top flange can be hidden. While playing, the newest turns
-  glow and the guide is shown with the free wire running to the coil.
+  put it. Navigation works as in Fusion:
+  - Scroll zooms at the pointer, right down onto single wires.
+  - Middle-drag pans and Shift + middle-drag orbits.
+  - Left-drag does whatever the navigation bar has picked: Orbit, Pan or
+    Zoom.
+  - The bar also has Fit (or double-click), Home, perspective or
+    orthographic, and the top flange on or off.
+
+  The **ViewCube** works like Autodesk's. Click any of its 26 faces, edges
+  or corners to swing to that view, or drag the cube to orbit. Drag the
+  compass ring to turn about the bobbin's axis, and click the house to go
+  home. Looking straight at a face, arrows step to the next face over.
+  While playing, the newest turns glow and the guide is shown with the free
+  wire running to the coil.
 - **Cross-section**: every turn where it lands, cut through the middle of a
   long side or through a short end, coloured by turn order or by section.
   Hover a wire to see its turn number. Wire is pressed into its grooves on
@@ -105,10 +124,9 @@ pass and reversal point for every pass). See
 [docs/WINDING_MODEL.md](docs/WINDING_MODEL.md) for how the lay is worked
 out and what it was checked against.
 
-Scrub or play the wind (1× to 1000× real speed). The right panel shows what
-the laid coil measures: DCR, wire length, build on the long side and short
+Properties shows what the laid coil measures: DCR, wire length, build on the long side and short
 end, fill factor, inductance, self-capacitance, resonance and Q, plus the
-layer model's DCR as a cross-check, and run time. **Export G-code** bakes the
+layer model's DCR as a cross-check, and run time. **MAKE › G-code** bakes the
 program, reads it back to check it, then saves it. The File menu opens and
 saves designs (Ctrl+S), imports the Python app's recipes and loads a machine
 profile.

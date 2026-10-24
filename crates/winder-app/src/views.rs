@@ -20,8 +20,8 @@ pub enum Coloring {
     Section,
 }
 
-const GRID: Color32 = Color32::from_gray(70);
-const TEXT: Color32 = Color32::from_gray(170);
+const GRID: Color32 = Color32::from_gray(80);
+const TEXT: Color32 = Color32::from_gray(110);
 const ACCENT: Color32 = Color32::from_rgb(255, 122, 77);
 const WARN: Color32 = Color32::from_rgb(224, 122, 90);
 
@@ -196,7 +196,7 @@ pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
             painter.rect_filled(
                 Rect::from_x_y_ranges(a..=b, rect.y_range()),
                 0.0,
-                Color32::from_white_alpha(6),
+                Color32::from_black_alpha(10),
             );
         }
         painter.text(

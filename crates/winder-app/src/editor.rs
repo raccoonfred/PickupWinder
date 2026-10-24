@@ -1,122 +1,107 @@
-//! The design form: bobbin, wire, speed, estimate inputs and the section
-//! stack. Edits the design in place; the app notices the change and
-//! recomputes.
+//! The design's edit forms: bobbin, wire, speed, wire path, estimate inputs
+//! and each section. Each is the body of one browser node's edit dialog.
+//! They edit the design in place; the app notices the change and
+//! recomputes, so the coil updates while you type.
 
-use eframe::egui::{self, DragValue, RichText, Ui};
+use eframe::egui::{self, DragValue, Ui};
 use winder_core::{Bobbin, Design, Direction, Pattern, Section, WireSpec, wire::WireRef};
 
-pub fn design_form(ui: &mut Ui, d: &mut Design) {
-    ui.horizontal(|ui| {
+/// Name and notes.
+pub fn document(ui: &mut Ui, d: &mut Design) {
+    grid(ui, "document", |ui| {
         ui.label("Name");
         ui.text_edit_singleline(&mut d.name);
+        ui.end_row();
     });
     ui.label("Notes");
     ui.add(
         egui::TextEdit::multiline(&mut d.notes)
-            .desired_rows(2)
+            .desired_rows(3)
             .desired_width(f32::INFINITY),
     );
-
-    ui.add_space(6.0);
-    egui::CollapsingHeader::new(RichText::new("Bobbin").strong())
-        .default_open(true)
-        .show(ui, |ui| bobbin(ui, &mut d.bobbin));
-    egui::CollapsingHeader::new(RichText::new("Wire and direction").strong())
-        .default_open(true)
-        .show(ui, |ui| wire(ui, d));
-    egui::CollapsingHeader::new(RichText::new("Speed").strong())
-        .default_open(true)
-        .show(ui, |ui| {
-            grid(ui, "speed", |ui| {
-                row(
-                    ui,
-                    "Spindle RPM",
-                    DragValue::new(&mut d.speed.rpm)
-                        .range(10.0..=2000.0)
-                        .speed(5.0),
-                );
-                row(
-                    ui,
-                    "Ramp (turns)",
-                    DragValue::new(&mut d.speed.ramp_turns)
-                        .range(0.0..=2000.0)
-                        .speed(1.0),
-                );
-                row(
-                    ui,
-                    "Ramp start RPM",
-                    DragValue::new(&mut d.speed.ramp_start_rpm)
-                        .range(10.0..=2000.0)
-                        .speed(1.0),
-                );
-            });
-        });
-    egui::CollapsingHeader::new(RichText::new("Wire path").strong())
-        .default_open(false)
-        .show(ui, |ui| {
-            grid(ui, "lay", |ui| {
-                row(
-                    ui,
-                    "Free span",
-                    mm(&mut d.lay.free_span_mm, 500.0).speed(0.5),
-                )
-                .on_hover_text(
-                    "Free wire from the guide's eye to where it meets the coil. \
-                     The longer it is, the more the wire lags the guide and the \
-                     rounder the reversals.",
-                );
-            });
-        });
-    egui::CollapsingHeader::new(RichText::new("Estimate inputs").strong())
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.weak("Used by the tone estimate; the toolpath doesn't set these.");
-            grid(ui, "estimate", |ui| {
-                let e = &mut d.estimate;
-                let mut use_tension = e.tension_g.is_some();
-                ui.label("Wire tension");
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut use_tension, "").changed() {
-                        e.tension_g = use_tension.then_some(35.0);
-                    }
-                    if let Some(t) = &mut e.tension_g {
-                        ui.add(DragValue::new(t).range(1.0..=120.0).suffix(" g"));
-                    } else {
-                        ui.weak("off: manual pack");
-                    }
-                });
-                ui.end_row();
-                if e.tension_g.is_none() {
-                    row(
-                        ui,
-                        "Pack factor",
-                        DragValue::new(&mut e.pack).range(0.5..=1.0).speed(0.005),
-                    );
-                }
-                row(
-                    ui,
-                    "Scatter (0-100)",
-                    DragValue::new(&mut e.scatter).range(0.0..=100.0),
-                );
-                row(
-                    ui,
-                    "Measure temp",
-                    DragValue::new(&mut e.temp_c)
-                        .range(-10.0..=80.0)
-                        .suffix(" °C"),
-                );
-            });
-        });
-
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.heading("Sections");
-        ui.weak(format!("{} turns", d.total_turns()));
-    });
-    sections(ui, d);
 }
 
-fn bobbin(ui: &mut Ui, b: &mut Bobbin) {
+pub fn speed(ui: &mut Ui, d: &mut Design) {
+    grid(ui, "speed", |ui| {
+        row(
+            ui,
+            "Spindle RPM",
+            DragValue::new(&mut d.speed.rpm)
+                .range(10.0..=2000.0)
+                .speed(5.0),
+        );
+        row(
+            ui,
+            "Ramp (turns)",
+            DragValue::new(&mut d.speed.ramp_turns)
+                .range(0.0..=2000.0)
+                .speed(1.0),
+        );
+        row(
+            ui,
+            "Ramp start RPM",
+            DragValue::new(&mut d.speed.ramp_start_rpm)
+                .range(10.0..=2000.0)
+                .speed(1.0),
+        );
+    });
+}
+
+pub fn wire_path(ui: &mut Ui, d: &mut Design) {
+    grid(ui, "lay", |ui| {
+        row(
+            ui,
+            "Free span",
+            mm(&mut d.lay.free_span_mm, 500.0).speed(0.5),
+        )
+        .on_hover_text(
+            "Free wire from the guide's eye to where it meets the coil. \
+             The longer it is, the more the wire lags the guide and the \
+             rounder the reversals.",
+        );
+    });
+}
+
+pub fn estimate(ui: &mut Ui, d: &mut Design) {
+    ui.weak("Used by the tone estimate; the toolpath doesn't set these.");
+    grid(ui, "estimate", |ui| {
+        let e = &mut d.estimate;
+        let mut use_tension = e.tension_g.is_some();
+        ui.label("Wire tension");
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut use_tension, "").changed() {
+                e.tension_g = use_tension.then_some(35.0);
+            }
+            if let Some(t) = &mut e.tension_g {
+                ui.add(DragValue::new(t).range(1.0..=120.0).suffix(" g"));
+            } else {
+                ui.weak("off: manual pack");
+            }
+        });
+        ui.end_row();
+        if e.tension_g.is_none() {
+            row(
+                ui,
+                "Pack factor",
+                DragValue::new(&mut e.pack).range(0.5..=1.0).speed(0.005),
+            );
+        }
+        row(
+            ui,
+            "Scatter (0-100)",
+            DragValue::new(&mut e.scatter).range(0.0..=100.0),
+        );
+        row(
+            ui,
+            "Measure temp",
+            DragValue::new(&mut e.temp_c)
+                .range(-10.0..=80.0)
+                .suffix(" °C"),
+        );
+    });
+}
+
+pub fn bobbin(ui: &mut Ui, b: &mut Bobbin) {
     ui.horizontal(|ui| {
         ui.label("Preset");
         egui::ComboBox::from_id_salt("bobbin-preset")
@@ -139,7 +124,7 @@ fn bobbin(ui: &mut Ui, b: &mut Bobbin) {
     });
 }
 
-fn wire(ui: &mut Ui, d: &mut Design) {
+pub fn wire(ui: &mut Ui, d: &mut Design) {
     let current = match &d.wire {
         WireRef::Named(n) => n.clone(),
         WireRef::Custom(_) => "Custom".into(),
@@ -204,79 +189,36 @@ fn wire(ui: &mut Ui, d: &mut Design) {
     });
 }
 
-enum Action {
-    Up(usize),
-    Down(usize),
-    Duplicate(usize),
-    Remove(usize),
+/// The kinds of section the CREATE menu makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Layer,
+    Helix,
+    Scatter,
 }
 
-fn sections(ui: &mut Ui, d: &mut Design) {
-    let mut action = None;
-    let n = d.sections.len();
+/// A new section of `kind` sized for this design's window.
+pub fn new_section(d: &Design, kind: Kind) -> Section {
+    let od = d.wire_spec().map_or(0.071, |w| w.od_mm);
+    let side_by_side = ((d.bobbin.channel_height_mm - od) / od).max(1.0).round();
+    match kind {
+        Kind::Layer => Section::layer(200),
+        Kind::Helix => Section::helix(1000, (side_by_side * 0.7).round()),
+        Kind::Scatter => {
+            Section::with(1000, scatter_default(d.sections.len() as u64, side_by_side))
+        }
+    }
+}
+
+/// Section `i`'s settings.
+pub fn section_form(ui: &mut Ui, d: &mut Design, i: usize) {
     let od = d.wire_spec().map_or(0.071, |w| w.od_mm);
     let channel = d.bobbin.channel_height_mm;
-    let side_by_side = ((channel - od) / od).max(1.0).round();
-    for (i, s) in d.sections.iter_mut().enumerate() {
-        let title = format!("{}. {} · {} turns", i + 1, s.pattern.label(), s.turns);
-        egui::CollapsingHeader::new(RichText::new(title).strong())
-            .id_salt(("section", i))
-            .default_open(i == 0)
-            .show(ui, |ui| {
-                let window = channel - s.inset_start_mm - s.inset_end_mm - od;
-                section(ui, i, s, window, od);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(i > 0, egui::Button::new("Up").small())
-                        .clicked()
-                    {
-                        action = Some(Action::Up(i));
-                    }
-                    if ui
-                        .add_enabled(i + 1 < n, egui::Button::new("Down").small())
-                        .clicked()
-                    {
-                        action = Some(Action::Down(i));
-                    }
-                    if ui.small_button("Duplicate").clicked() {
-                        action = Some(Action::Duplicate(i));
-                    }
-                    if ui
-                        .add_enabled(n > 1, egui::Button::new("Remove").small())
-                        .clicked()
-                    {
-                        action = Some(Action::Remove(i));
-                    }
-                });
-            });
-    }
-    match action {
-        Some(Action::Up(i)) => d.sections.swap(i, i - 1),
-        Some(Action::Down(i)) => d.sections.swap(i, i + 1),
-        Some(Action::Duplicate(i)) => {
-            let s = d.sections[i].clone();
-            d.sections.insert(i + 1, s);
-        }
-        Some(Action::Remove(i)) => {
-            d.sections.remove(i);
-        }
-        None => {}
-    }
-    ui.horizontal(|ui| {
-        if ui.button("+ Layer").clicked() {
-            d.sections.push(Section::layer(200));
-        }
-        if ui.button("+ Helix").clicked() {
-            d.sections
-                .push(Section::helix(1000, (side_by_side * 0.7).round()));
-        }
-        if ui.button("+ Scatter").clicked() {
-            d.sections.push(Section::with(
-                1000,
-                scatter_default(d.sections.len() as u64, side_by_side),
-            ));
-        }
-    });
+    let Some(s) = d.sections.get_mut(i) else {
+        return;
+    };
+    let window = channel - s.inset_start_mm - s.inset_end_mm - od;
+    section(ui, i, s, window, od);
 }
 
 fn scatter_default(seed: u64, side_by_side: f64) -> Pattern {

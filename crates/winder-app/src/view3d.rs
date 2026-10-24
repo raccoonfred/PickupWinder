@@ -9,14 +9,26 @@
 
 use crate::model::Computed;
 use eframe::{
-    egui::{self, Align2, Color32, FontId, Pos2, Sense, Stroke, Ui, Vec2, pos2},
+    egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2},
     egui_glow,
     glow::{self, HasContext},
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    f32::consts::{FRAC_PI_2, PI},
+    sync::{Arc, Mutex},
+};
 use winder_core::Design;
 
+/// What a left-drag does in the 3D view, picked on the navigation bar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Orbit,
+    Pan,
+    Zoom,
+}
+
 /// Orbit camera. Angles in radians; `zoom` multiplies the fitted scale.
+/// Yaw 0 looks at the FRONT (the +z long side), pitch π/2 from the TOP.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Camera {
     pub yaw: f32,
@@ -24,18 +36,149 @@ pub struct Camera {
     pub zoom: f32,
     pub pan: Vec2,
     pub top_flange: bool,
+    pub perspective: bool,
+    pub tool: Tool,
+    anim: Option<Anim>,
 }
+
+/// A camera move in progress, eased from one pose to another.
+#[derive(Clone, Copy, PartialEq)]
+struct Anim {
+    from: Pose,
+    to: Pose,
+    t: f32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Pose {
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    pan: Vec2,
+}
+
+/// The home view: front, right and top all in sight, as in Fusion.
+pub const HOME_YAW: f32 = std::f32::consts::FRAC_PI_4;
+pub const HOME_PITCH: f32 = 0.615_479_7; // asin(1/√3)
 
 impl Default for Camera {
     fn default() -> Self {
         Camera {
-            yaw: 0.55,
-            pitch: 0.5,
+            yaw: HOME_YAW,
+            pitch: HOME_PITCH,
             zoom: 1.0,
             pan: Vec2::ZERO,
             top_flange: true,
+            perspective: true,
+            tool: Tool::Orbit,
+            anim: None,
         }
     }
+}
+
+impl Camera {
+    fn pose(&self) -> Pose {
+        Pose {
+            yaw: self.yaw,
+            pitch: self.pitch,
+            zoom: self.zoom,
+            pan: self.pan,
+        }
+    }
+
+    /// Swing round to look along `-dir` (so `dir` points at the eye),
+    /// keeping zoom and pan.
+    pub fn look_from(&mut self, dir: [f32; 3]) {
+        let (yaw, pitch) = angles_of(dir, self.yaw);
+        let to = Pose {
+            yaw,
+            pitch,
+            ..self.pose()
+        };
+        self.animate(to);
+    }
+
+    /// Back to the home view, fitted.
+    pub fn home(&mut self) {
+        self.animate(Pose {
+            yaw: HOME_YAW,
+            pitch: HOME_PITCH,
+            zoom: 1.0,
+            pan: Vec2::ZERO,
+        });
+    }
+
+    /// Fit the whole coil in the view, keeping the direction.
+    pub fn fit(&mut self) {
+        self.animate(Pose {
+            zoom: 1.0,
+            pan: Vec2::ZERO,
+            ..self.pose()
+        });
+    }
+
+    fn animate(&mut self, mut to: Pose) {
+        let from = self.pose();
+        // The short way round.
+        to.yaw = from.yaw + wrap_angle(to.yaw - from.yaw);
+        self.anim = Some(Anim { from, to, t: 0.0 });
+    }
+
+    pub fn orbit(&mut self, d: Vec2) {
+        self.anim = None;
+        self.yaw = wrap_angle(self.yaw - d.x * 0.008);
+        self.pitch = (self.pitch + d.y * 0.008).clamp(-FRAC_PI_2, FRAC_PI_2);
+    }
+
+    /// Zoom by `factor` about `at`, given relative to the view centre.
+    pub fn zoom_about(&mut self, factor: f32, at: Vec2) {
+        self.anim = None;
+        let old = self.zoom;
+        self.zoom = (self.zoom * factor).clamp(0.2, 400.0);
+        self.pan -= (at - self.pan) * (self.zoom / old - 1.0);
+    }
+
+    /// Move an animation on by `dt` seconds; true while one is running.
+    pub fn step(&mut self, dt: f32) -> bool {
+        let Some(a) = &mut self.anim else {
+            return false;
+        };
+        a.t = (a.t + dt / 0.45).min(1.0);
+        let e = a.t * a.t * (3.0 - 2.0 * a.t);
+        let (f, t) = (a.from, a.to);
+        let lerp = |x: f32, y: f32| x + (y - x) * e;
+        self.yaw = lerp(f.yaw, t.yaw);
+        self.pitch = lerp(f.pitch, t.pitch);
+        // Zoom eases in log space, so it doesn't lurch.
+        self.zoom = (lerp(f.zoom.ln(), t.zoom.ln())).exp();
+        self.pan = f.pan + (t.pan - f.pan) * e;
+        if a.t >= 1.0 {
+            self.yaw = wrap_angle(self.yaw);
+            self.anim = None;
+        }
+        true
+    }
+}
+
+/// Yaw and pitch that look from `dir`. Straight down or up keeps the
+/// current yaw, squared to the nearest side so the cube reads upright.
+fn angles_of(dir: [f32; 3], yaw_now: f32) -> (f32, f32) {
+    let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
+        .sqrt()
+        .max(1e-9);
+    let pitch = (dir[1] / l).clamp(-1.0, 1.0).asin();
+    let flat = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt() / l;
+    let yaw = if flat < 1e-4 {
+        // Ties go toward the front, so TOP from home has FRONT at the bottom.
+        ((yaw_now - 1e-3) / FRAC_PI_2).round() * FRAC_PI_2
+    } else {
+        dir[0].atan2(dir[2])
+    };
+    (yaw, pitch)
+}
+
+fn wrap_angle(a: f32) -> f32 {
+    (a + PI).rem_euclid(2.0 * PI) - PI
 }
 
 /// Points per turn along the wire.
@@ -289,12 +432,15 @@ fn plate(out: &mut Vec<f32>, core: &Core, y0: f32, y1: f32, reach: f32, col: [f3
 struct View {
     rows: [[f32; 3]; 3],
     center: [f32; 3],
-    /// Pixels per mm.
+    /// Pixels per mm at the centre's depth.
     scale: f32,
+    /// Eye distance from the centre (mm) for perspective; None for an
+    /// orthographic view.
+    eye: Option<f32>,
 }
 
 impl View {
-    fn new(cam: &Camera, mid_y: f32, scale: f32) -> View {
+    fn new(cam: &Camera, mid_y: f32, scale: f32, span_mm: f32) -> View {
         let (sy, cy) = cam.yaw.sin_cos();
         let (sp, cp) = cam.pitch.sin_cos();
         View {
@@ -305,6 +451,10 @@ impl View {
             ],
             center: [0.0, mid_y, 0.0],
             scale,
+            // About a 30° lens at the fitted zoom: some depth, little
+            // distortion. Zooming narrows the lens rather than moving the
+            // eye, so the coil never passes the near plane.
+            eye: cam.perspective.then_some(span_mm * 2.4),
         }
     }
 
@@ -322,24 +472,63 @@ impl View {
         ]
     }
 
+    /// The eye's position in the world, for perspective.
+    fn eye_pos(&self) -> [f32; 3] {
+        let d = self.eye.unwrap_or(1e4);
+        let r = self.rows[2];
+        [
+            self.center[0] + r[0] * d,
+            self.center[1] + r[1] * d,
+            self.center[2] + r[2] * d,
+        ]
+    }
+
     /// Clip-space matrix (column-major) for a viewport of `size` px, with
-    /// the scene shifted by `pan` px. Orthographic, like a CAD view.
+    /// the scene shifted by `pan` px.
     fn mvp(&self, size: Vec2, pan: Vec2) -> [f32; 16] {
         let sx = self.scale / (size.x / 2.0);
         let sy = self.scale / (size.y / 2.0);
-        let depth = 1.0 / 400.0;
+        let (px, py) = (pan.x / (size.x / 2.0), -pan.y / (size.y / 2.0));
+        // World to view (mm, eye looking down -z).
         let r = &self.rows;
         let c = self.center;
         let dot = |row: [f32; 3]| row[0] * c[0] + row[1] * c[1] + row[2] * c[2];
-        let tx = -dot(r[0]) * sx + pan.x / (size.x / 2.0);
-        let ty = -dot(r[1]) * sy - pan.y / (size.y / 2.0);
-        let tz = dot(r[2]) * depth;
-        let m = [
-            [r[0][0] * sx, r[0][1] * sx, r[0][2] * sx, tx],
-            [r[1][0] * sy, r[1][1] * sy, r[1][2] * sy, ty],
-            [-r[2][0] * depth, -r[2][1] * depth, -r[2][2] * depth, tz],
+        let view = [
+            [r[0][0], r[0][1], r[0][2], -dot(r[0])],
+            [r[1][0], r[1][1], r[1][2], -dot(r[1])],
+            [r[2][0], r[2][1], r[2][2], -dot(r[2])],
             [0.0, 0.0, 0.0, 1.0],
         ];
+        let proj = match self.eye {
+            None => {
+                let depth = 1.0 / 400.0;
+                [
+                    [sx, 0.0, 0.0, px],
+                    [0.0, sy, 0.0, py],
+                    [0.0, 0.0, -depth, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            }
+            Some(d) => {
+                // w = distance from the eye / d, so the centre's depth keeps
+                // the orthographic scale.
+                let (n, f) = (d * 0.25, d * 2.5);
+                let a = (f + n) / (f - n);
+                let b = 2.0 * f * n / (f - n);
+                [
+                    [sx, 0.0, -px / d, px],
+                    [0.0, sy, -py / d, py],
+                    [0.0, 0.0, -a / d, a - b / d],
+                    [0.0, 0.0, -1.0 / d, 1.0],
+                ]
+            }
+        };
+        let mut m = [[0.0f32; 4]; 4];
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = (0..4).map(|k| proj[i][k] * view[k][j]).sum();
+            }
+        }
         let mut out = [0.0f32; 16];
         for col in 0..4 {
             for row in 0..4 {
@@ -351,7 +540,11 @@ impl View {
 
     fn to_screen(&self, p: [f32; 3], origin: Pos2) -> Pos2 {
         let v = self.to_view(p);
-        pos2(origin.x + v[0] * self.scale, origin.y - v[1] * self.scale)
+        let k = self.eye.map_or(1.0, |d| d / (d - v[2]).max(1e-3));
+        pos2(
+            origin.x + v[0] * self.scale * k,
+            origin.y - v[1] * self.scale * k,
+        )
     }
 }
 
@@ -378,6 +571,8 @@ pub struct Renderer {
 const WIRE_VS: &str = r#"
 uniform mat4 u_mvp;
 uniform vec3 u_to_eye;
+uniform vec3 u_eye;
+uniform float u_persp;
 uniform float u_radius;
 in vec3 a_pos;
 in vec3 a_tan;
@@ -386,16 +581,19 @@ in float a_side;
 in float a_turn;
 out vec3 v_side_dir;
 out vec3 v_nrm;
+out vec3 v_to_eye;
 out float v_side;
 out float v_turn;
 void main() {
-    vec3 s = cross(a_tan, u_to_eye);
+    vec3 e = u_persp > 0.5 ? normalize(u_eye - a_pos) : u_to_eye;
+    vec3 s = cross(a_tan, e);
     float l = length(s);
     s = l > 1e-6 ? s / l : vec3(0.0, 1.0, 0.0);
     vec3 p = a_pos + s * a_side * u_radius;
     gl_Position = u_mvp * vec4(p, 1.0);
     v_side_dir = s;
     v_nrm = a_nrm;
+    v_to_eye = e;
     v_side = a_side;
     v_turn = a_turn;
 }
@@ -403,23 +601,24 @@ void main() {
 
 const WIRE_FS: &str = r#"
 precision mediump float;
-uniform vec3 u_to_eye;
 uniform vec3 u_light;
 uniform float u_total;
 uniform float u_upto;
 in vec3 v_side_dir;
 in vec3 v_nrm;
+in vec3 v_to_eye;
 in float v_side;
 in float v_turn;
 out vec4 out_color;
 void main() {
+    vec3 to_eye = normalize(v_to_eye);
     float k = clamp(v_side, -1.0, 1.0);
     float c = sqrt(max(0.0, 1.0 - k * k));
     // A round wire seen side on: across the ribbon the surface turns from
     // one side, through facing the eye, to the other.
-    vec3 n = normalize(v_side_dir * k + normalize(u_to_eye + 0.6 * v_nrm) * c);
+    vec3 n = normalize(v_side_dir * k + normalize(to_eye + 0.6 * v_nrm) * c);
     float diff = max(dot(n, u_light), 0.0);
-    vec3 h = normalize(u_light + u_to_eye);
+    vec3 h = normalize(u_light + to_eye);
     float spec = pow(max(dot(n, h), 0.0), 40.0);
     // Dark copper for the first turns, light for the last; the newest
     // turns glow so the wire being laid stands out while playing.
@@ -583,7 +782,7 @@ impl Renderer {
     unsafe fn paint(&mut self, gl: &glow::Context, f: &Frame) {
         unsafe {
             self.upload(gl);
-            let light = norm([0.35, 0.8, 0.5]);
+            let light = f.light;
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(true);
@@ -598,6 +797,9 @@ impl Renderer {
                 gl.uniform_3_f32(u("u_light").as_ref(), light[0], light[1], light[2]);
                 let e = f.to_eye;
                 gl.uniform_3_f32(u("u_to_eye").as_ref(), e[0], e[1], e[2]);
+                let p = f.eye;
+                gl.uniform_3_f32(u("u_eye").as_ref(), p[0], p[1], p[2]);
+                gl.uniform_1_f32(u("u_persp").as_ref(), f32::from(u8::from(f.perspective)));
                 gl.uniform_1_f32(u("u_radius").as_ref(), f.radius);
                 gl.uniform_1_f32(u("u_total").as_ref(), self.turns as f32);
                 gl.uniform_1_f32(u("u_upto").as_ref(), f.upto);
@@ -634,6 +836,9 @@ impl Renderer {
 struct Frame {
     mvp: [f32; 16],
     to_eye: [f32; 3],
+    eye: [f32; 3],
+    perspective: bool,
+    light: [f32; 3],
     radius: f32,
     upto: f32,
     top_flange: bool,
@@ -644,6 +849,10 @@ fn norm(v: [f32; 3]) -> [f32; 3] {
     [v[0] / l, v[1] / l, v[2] / l]
 }
 
+/// The 3D view, navigated the way Fusion's canvas is: scroll zooms at the
+/// pointer, the middle button pans, Shift + middle orbits, and a left-drag
+/// does whatever the navigation bar has picked (orbit unless told
+/// otherwise). The ViewCube sits top right.
 pub fn coil_3d(
     ui: &mut Ui,
     d: &Design,
@@ -652,53 +861,71 @@ pub fn coil_3d(
     cam: &mut Camera,
     renderer: Option<&Arc<Mutex<Renderer>>>,
 ) {
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut cam.top_flange, "Top flange");
-        if ui.small_button("Reset view").clicked() {
-            *cam = Camera {
-                top_flange: cam.top_flange,
-                ..Camera::default()
-            };
-        }
-        ui.weak("drag to turn · right-drag to move · scroll to zoom in on the wire");
-    });
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let rect = resp.rect;
+    backdrop(&painter, rect);
     let Some(renderer) = renderer else {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
             "The 3D view needs OpenGL 3, which isn't available here.",
             FontId::proportional(14.0),
-            Color32::from_gray(170),
+            Color32::from_gray(90),
         );
         return;
     };
-    if resp.dragged_by(egui::PointerButton::Primary) {
-        let dl = resp.drag_delta();
-        cam.yaw += dl.x * 0.01;
-        cam.pitch = (cam.pitch + dl.y * 0.01).clamp(-1.55, 1.55);
-    }
-    if resp.dragged_by(egui::PointerButton::Secondary)
-        || resp.dragged_by(egui::PointerButton::Middle)
-    {
-        cam.pan += resp.drag_delta();
-    }
-    if resp.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            // Zoom about the pointer, so you can dive onto one spot.
-            let old = cam.zoom;
-            cam.zoom = (cam.zoom * (scroll * 0.004).exp()).clamp(0.3, 200.0);
-            if let Some(p) = resp.hover_pos() {
-                let from_center = p - rect.center() - cam.pan;
-                cam.pan -= from_center * (cam.zoom / old - 1.0);
+
+    let (shift, dt, scroll, pinch) = ui.input(|i| {
+        (
+            i.modifiers.shift,
+            i.stable_dt.min(0.1),
+            i.smooth_scroll_delta.y,
+            i.zoom_delta(),
+        )
+    });
+    use egui::PointerButton::{Middle, Primary, Secondary};
+    let dl = resp.drag_delta();
+    if resp.dragged_by(Middle) && shift {
+        cam.orbit(dl);
+    } else if resp.dragged_by(Middle) || resp.dragged_by(Secondary) {
+        cam.pan += dl;
+        cam.anim = None;
+    } else if resp.dragged_by(Primary) {
+        match cam.tool {
+            Tool::Orbit => cam.orbit(dl),
+            Tool::Pan => {
+                cam.pan += dl;
+                cam.anim = None;
             }
+            Tool::Zoom => cam.zoom_about((-dl.y * 0.01).exp(), Vec2::ZERO),
         }
     }
-    if resp.double_clicked() {
-        cam.pan = Vec2::ZERO;
-        cam.zoom = 1.0;
+    if resp.hovered() {
+        let at = resp.hover_pos().map_or(Vec2::ZERO, |p| p - rect.center());
+        if scroll != 0.0 {
+            // Zoom about the pointer, so you can dive onto one spot.
+            cam.zoom_about((scroll * 0.004).exp(), at);
+        }
+        if pinch != 1.0 {
+            cam.zoom_about(pinch, at);
+        }
+    }
+    if resp.double_clicked_by(Middle) || resp.double_clicked_by(Primary) {
+        cam.fit();
+    }
+    if resp.dragged() {
+        ui.ctx()
+            .set_cursor_icon(match (cam.tool, resp.dragged_by(Primary)) {
+                (Tool::Pan, true) => egui::CursorIcon::Grabbing,
+                (Tool::Zoom, true) => egui::CursorIcon::ResizeVertical,
+                _ if resp.dragged_by(Middle) && !shift => egui::CursorIcon::Grabbing,
+                _ if resp.dragged_by(Secondary) => egui::CursorIcon::Grabbing,
+                _ => egui::CursorIcon::AllScroll,
+            });
+    }
+
+    if cam.step(dt) {
+        ui.ctx().request_repaint();
     }
 
     let (span, channel, od, turns) = {
@@ -706,10 +933,20 @@ pub fn coil_3d(
         (r.span_mm, r.channel, r.od, r.turns)
     };
     let scale = rect.width().min(rect.height()) / span * 0.9 * cam.zoom;
-    let view = View::new(cam, channel / 2.0, scale);
+    let view = View::new(cam, channel / 2.0, scale, span);
+    let r = &view.rows;
+    // A light over the viewer's shoulder, so whatever you turn to is lit.
+    let light = norm([
+        0.35 * r[0][0] + 0.6 * r[1][0] + 0.72 * r[2][0],
+        0.35 * r[0][1] + 0.6 * r[1][1] + 0.72 * r[2][1],
+        0.35 * r[0][2] + 0.6 * r[1][2] + 0.72 * r[2][2],
+    ]);
     let frame = Frame {
         mvp: view.mvp(rect.size(), cam.pan),
         to_eye: view.rows[2],
+        eye: view.eye_pos(),
+        perspective: view.eye.is_some(),
+        light,
         // Never thinner than about a pixel, so a zoomed-out coil still
         // reads as wire rather than gaps.
         radius: (od / 2.0).max(0.6 / scale),
@@ -724,6 +961,15 @@ pub fn coil_3d(
             unsafe { r.paint(p.gl(), &frame) };
         })),
     });
+
+    // Drawn over the coil, so after it; a change they make shows next
+    // frame.
+    let before = *cam;
+    crate::viewcube::view_cube(ui, rect, cam);
+    nav_bar(ui, rect, cam);
+    if *cam != before {
+        ui.ctx().request_repaint();
+    }
 
     // The guide and the free wire to the lay point, while winding.
     let origin = rect.center() + cam.pan;
@@ -746,17 +992,100 @@ pub fn coil_3d(
         ];
         let (gp, lp) = (view.to_screen(g, origin), view.to_screen(lay, origin));
         if rect.contains(gp) || rect.contains(lp) {
-            painter.line_segment([gp, lp], Stroke::new(1.0, Color32::from_rgb(255, 200, 140)));
+            painter.line_segment([gp, lp], Stroke::new(1.0, Color32::from_rgb(214, 120, 48)));
             painter.circle_filled(gp, 5.0, Color32::from_rgb(255, 122, 77));
             painter.text(
                 gp + Vec2::new(8.0, -8.0),
                 Align2::LEFT_BOTTOM,
                 "guide",
                 FontId::proportional(11.0),
-                Color32::from_gray(200),
+                Color32::from_gray(60),
             );
         }
     }
+}
+
+/// Fusion's canvas: a soft grey-blue fading to white at the top.
+fn backdrop(painter: &egui::Painter, rect: Rect) {
+    let mut mesh = egui::Mesh::default();
+    let top = Color32::from_rgb(252, 253, 254);
+    let bottom = Color32::from_rgb(196, 206, 218);
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// The navigation bar along the bottom of the canvas.
+fn nav_bar(ui: &mut Ui, canvas: Rect, cam: &mut Camera) {
+    let size = Vec2::new(440.0, 30.0);
+    let bar = Rect::from_center_size(pos2(canvas.center().x, canvas.bottom() - 26.0), size);
+    ui.painter().rect(
+        bar,
+        4.0,
+        Color32::from_rgba_unmultiplied(255, 255, 255, 236),
+        Stroke::new(1.0, Color32::from_gray(200)),
+        egui::StrokeKind::Inside,
+    );
+    let inner = bar.shrink2(Vec2::new(8.0, 3.0));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (tool, label, tip) in [
+                (
+                    Tool::Orbit,
+                    "Orbit",
+                    "Left-drag turns the view (Shift + middle-drag too)",
+                ),
+                (
+                    Tool::Pan,
+                    "Pan",
+                    "Left-drag moves the view (middle-drag too)",
+                ),
+                (
+                    Tool::Zoom,
+                    "Zoom",
+                    "Left-drag up and down zooms (scroll zooms at the pointer)",
+                ),
+            ] {
+                ui.selectable_value(&mut cam.tool, tool, label)
+                    .on_hover_text(tip);
+            }
+            ui.separator();
+            if ui
+                .button("Fit")
+                .on_hover_text("Fit the coil to the view (double-click the middle button)")
+                .clicked()
+            {
+                cam.fit();
+            }
+            if ui.button("Home").on_hover_text("Home view").clicked() {
+                cam.home();
+            }
+            ui.separator();
+            let label = if cam.perspective {
+                "Perspective"
+            } else {
+                "Orthographic"
+            };
+            if ui
+                .selectable_label(false, label)
+                .on_hover_text("Switch between perspective and orthographic")
+                .clicked()
+            {
+                cam.perspective = !cam.perspective;
+            }
+            ui.separator();
+            ui.toggle_value(&mut cam.top_flange, "Top flange")
+                .on_hover_text("Show the top flatwork, see-through");
+        },
+    );
 }
 
 /// Guide position at `t` turns, from the thinned lay plot.
