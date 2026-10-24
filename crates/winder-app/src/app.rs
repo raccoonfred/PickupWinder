@@ -34,6 +34,7 @@ enum Edit {
     WirePath,
     Estimate,
     Auto,
+    Winding,
     Section(usize),
 }
 
@@ -47,6 +48,7 @@ impl Edit {
             Edit::WirePath => "EDIT WIRE PATH".into(),
             Edit::Estimate => "ESTIMATE INPUTS".into(),
             Edit::Auto => "TARGETS AND RULES".into(),
+            Edit::Winding => "EDIT WINDING".into(),
             Edit::Section(i) => format!("EDIT SECTION {}", i + 1),
         }
     }
@@ -74,6 +76,9 @@ pub struct WinderApp {
     scrub: f64,
     follow_end: bool,
     playing: bool,
+    /// How far round the spindle is in the turn under way, as drawn. At
+    /// fast playback it turns at a speed you can still follow.
+    spin_phase: f64,
     /// Playback speed as a multiple of the real winding speed.
     speedup: f64,
     imported: Vec<recipe::Imported>,
@@ -93,9 +98,9 @@ impl WinderApp {
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> WinderApp {
         chrome::fusion_style(&cc.egui_ctx);
         let mut app = WinderApp {
-            design: Design::example("strat").expect("preset exists"),
+            design: Design::simple("strat").expect("preset exists"),
             path: None,
-            saved: Design::example("strat").expect("preset exists"),
+            saved: Design::simple("strat").expect("preset exists"),
             profile: MachineProfile::default(),
             profile_path: None,
             computed: None,
@@ -113,6 +118,7 @@ impl WinderApp {
             scrub: 0.0,
             follow_end: true,
             playing: false,
+            spin_phase: 0.0,
             speedup: 60.0,
             imported: Vec::new(),
             editing: None,
@@ -244,7 +250,7 @@ impl WinderApp {
     // ---------- files ----------
 
     fn new_from(&mut self, preset: &str) {
-        if let Some(d) = Design::example(preset) {
+        if let Some(d) = Design::simple(preset) {
             self.design = d.clone();
             self.saved = d;
             self.path = None;
@@ -613,6 +619,33 @@ impl WinderApp {
                             open_edit = Some(e);
                         }
                     }
+                    let amount = match d.auto.target_dcr_kohm {
+                        Some(t) => format!("{t:.2} kΩ"),
+                        None => format!("{} turns", d.total_turns()),
+                    };
+                    let (icon, what) = match d.sections.as_slice() {
+                        [one] => (
+                            pattern_icon(&one.pattern),
+                            format!("{} · {amount}", title_case(one.pattern.label())),
+                        ),
+                        many => (
+                            pattern_icon(&many[auto::fill_index(d)].pattern),
+                            format!("{} sections · {amount}", many.len()),
+                        ),
+                    };
+                    let on = self
+                        .editing
+                        .as_ref()
+                        .is_some_and(|(x, _)| *x == Edit::Winding);
+                    if chrome::browser_row(ui, 0.0, Mark::Feature(icon), "Winding", &what, on)
+                        .on_hover_text("How the wire is laid and how much to wind")
+                        .clicked()
+                    {
+                        open_edit = Some(Edit::Winding);
+                    }
+                    if d.sections.len() < 2 {
+                        return;
+                    }
                     egui::CollapsingHeader::new(format!("Sections  ({} turns)", d.total_turns()))
                         .id_salt("browser-sections")
                         .default_open(true)
@@ -695,6 +728,7 @@ impl WinderApp {
                     Edit::WirePath => editor::wire_path(ui, d),
                     Edit::Estimate => editor::estimate(ui, d),
                     Edit::Auto => editor::auto(ui, d),
+                    Edit::Winding => editor::winding(ui, d),
                     Edit::Section(i) => editor::section_form(ui, d, i),
                 }
                 if let Some(err) = &self.error {
@@ -833,6 +867,7 @@ impl WinderApp {
                 shown,
                 c,
                 self.scrub,
+                self.spin_phase as f32,
                 &mut self.camera,
                 self.renderer.as_ref(),
             );
@@ -1094,11 +1129,25 @@ impl WinderApp {
             self.scrub = total;
         }
         if !self.playing {
+            // Standing still: the spindle is where the scrubbed turn has it.
+            self.spin_phase = if self.scrub >= total {
+                0.0
+            } else {
+                self.scrub.fract()
+            };
             return;
         }
         let rpm = self.design.speed.rpm;
         let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
-        self.scrub = (self.scrub + rpm / 60.0 * self.speedup * dt).min(total);
+        let turns_per_s = rpm / 60.0 * self.speedup;
+        self.scrub = (self.scrub + turns_per_s * dt).min(total);
+        // Faster than about three turns a second the eye can't follow the
+        // spindle (it strobes), so it is drawn turning at that.
+        if turns_per_s <= 3.0 {
+            self.spin_phase = self.scrub.fract();
+        } else {
+            self.spin_phase = (self.spin_phase + 3.0 * dt).fract();
+        }
         if self.scrub >= total {
             self.playing = false;
             self.follow_end = true;

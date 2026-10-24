@@ -104,6 +104,7 @@ fn import_one(name: &str, r: &Value) -> Result<Imported, DesignError> {
             // The Python app modelled a square-cornered core.
             corner_radius_mm: 0.0,
             style: Default::default(),
+            detail: Default::default(),
         },
         speed: Speed {
             rpm: num(&["rpm"], 420.0),

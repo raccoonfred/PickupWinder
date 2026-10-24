@@ -224,6 +224,33 @@ impl Design {
                 return bad(format!("bobbin.{name} must be a positive number"));
             }
         }
+        let dt = &b.detail;
+        for (name, v) in [
+            ("flange_length_mm", dt.flange_length_mm),
+            ("flange_width_mm", dt.flange_width_mm),
+            ("top_thickness_mm", dt.top_thickness_mm),
+            ("bottom_thickness_mm", dt.bottom_thickness_mm),
+            ("pole_diameter_mm", dt.pole_diameter_mm),
+        ] {
+            if v.is_some_and(|v| !(v > 0.0 && v.is_finite())) {
+                return bad(format!("bobbin.detail.{name} must be a positive number"));
+            }
+        }
+        for (name, v) in [
+            ("flange_corner_mm", dt.flange_corner_mm),
+            ("pole_spread_mm", dt.pole_spread_mm),
+            ("pole_height_mm", dt.pole_height_mm),
+        ] {
+            if v.is_some_and(|v| !(v >= 0.0 && v.is_finite())) {
+                return bad(format!("bobbin.detail.{name} can't be negative"));
+            }
+        }
+        if dt.pole_count.is_some_and(|n| n > 12) {
+            return bad("bobbin.detail.pole_count: at most 12".into());
+        }
+        if b.corner_radius_mm < 0.0 {
+            return bad("bobbin.corner_radius_mm can't be negative".into());
+        }
         let sp = &self.speed;
         if !(sp.rpm > 0.0 && sp.ramp_start_rpm > 0.0 && sp.ramp_turns >= 0.0) {
             return bad(
@@ -331,6 +358,18 @@ impl Design {
         })
     }
 
+    /// The plain version of `example`: one scattered winding, the way most
+    /// pickups are wound. Sections can be added later for a perfect-layer
+    /// base or cover.
+    pub fn simple(preset: &str) -> Option<Design> {
+        let mut d = Design::example(preset)?;
+        let turns = d.total_turns();
+        let body = d.sections.remove(1);
+        d.sections = vec![Section { turns, ..body }];
+        d.notes = "Scatter wound.".into();
+        Some(d)
+    }
+
     /// Width the guide sweeps for a section, between wire centres (mm).
     pub fn window_mm(&self, s: &Section, od_mm: f64) -> f64 {
         self.bobbin.channel_height_mm - s.inset_start_mm - s.inset_end_mm - od_mm
@@ -430,6 +469,17 @@ fn migrate_v1(table: &mut toml::Table) -> Result<(), DesignError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simple_is_one_winding_of_the_same_turns() {
+        for p in Bobbin::preset_names() {
+            let (a, b) = (Design::example(p).unwrap(), Design::simple(p).unwrap());
+            assert_eq!(b.sections.len(), 1);
+            assert_eq!(a.total_turns(), b.total_turns());
+            assert!(matches!(b.sections[0].pattern, Pattern::Scatter { .. }));
+            b.validate().unwrap();
+        }
+    }
 
     #[test]
     fn example_round_trips_through_toml() {

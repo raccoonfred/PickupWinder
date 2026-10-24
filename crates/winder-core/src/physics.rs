@@ -205,6 +205,7 @@ mod tests {
             build_depth_mm: 6.0,
             corner_radius_mm: 0.0,
             style: Default::default(),
+            detail: Default::default(),
         }
     }
 

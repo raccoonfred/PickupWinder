@@ -24,6 +24,42 @@ pub struct Bobbin {
     /// What kind of bobbin this is, for drawing it.
     #[serde(default, skip_serializing_if = "Style::is_generic")]
     pub style: Style,
+    /// Flange and pole sizes. Anything left out takes the kind's usual size.
+    #[serde(default, skip_serializing_if = "Detail::is_default")]
+    pub detail: Detail,
+}
+
+/// The parts of a bobbin that don't change how the wire lays, only how it
+/// looks: flanges (flatwork) and poles. `None` takes the kind's usual size.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Detail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flange_length_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flange_width_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flange_corner_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_thickness_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom_thickness_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pole_count: Option<u32>,
+    /// Centre to centre, first pole to last.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pole_spread_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pole_diameter_mm: Option<f64>,
+    /// How far the poles stand above the top flange.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pole_height_mm: Option<f64>,
+}
+
+impl Detail {
+    pub fn is_default(&self) -> bool {
+        *self == Detail::default()
+    }
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -35,7 +71,7 @@ fn is_zero(v: &f64) -> bool {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Style {
-    /// Plain flanges around the core.
+    /// Plain flanges around a solid core.
     #[default]
     Generic,
     /// Fibre flatwork, six rod magnets wound directly.
@@ -51,6 +87,26 @@ pub enum Style {
 impl Style {
     pub fn is_generic(&self) -> bool {
         *self == Style::Generic
+    }
+
+    pub const ALL: [Style; 6] = [
+        Style::Strat,
+        Style::TeleBridge,
+        Style::TeleNeck,
+        Style::Humbucker,
+        Style::P90,
+        Style::Generic,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Style::Generic => "Plain bobbin",
+            Style::Strat => "Strat flatwork",
+            Style::TeleBridge => "Tele bridge flatwork",
+            Style::TeleNeck => "Tele neck flatwork",
+            Style::Humbucker => "Humbucker bobbin",
+            Style::P90 => "P-90 bobbin",
+        }
     }
 }
 
@@ -91,6 +147,7 @@ impl Bobbin {
                 build_depth_mm: p.depth,
                 corner_radius_mm: p.width / 2.0,
                 style: p.style,
+                detail: Detail::default(),
             })
     }
 

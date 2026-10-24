@@ -3,8 +3,9 @@
 //! They edit the design in place; the app notices the change and
 //! recomputes, so the coil updates while you type.
 
+use crate::machine;
 use eframe::egui::{self, DragValue, Ui};
-use winder_core::{Bobbin, Design, Direction, Pattern, Section, WireSpec, wire::WireRef};
+use winder_core::{Bobbin, Design, Direction, Pattern, Section, Style, WireSpec, wire::WireRef};
 
 /// Name and notes.
 pub fn document(ui: &mut Ui, d: &mut Design) {
@@ -182,14 +183,154 @@ pub fn bobbin(ui: &mut Ui, b: &mut Bobbin) {
                 }
             });
     });
+    ui.add_space(4.0);
+    heading(ui, "Winding window");
     grid(ui, "bobbin", |ui| {
+        ui.label("Kind");
+        egui::ComboBox::from_id_salt("bobbin-style")
+            .selected_text(b.style.label())
+            .show_ui(ui, |ui| {
+                for s in Style::ALL {
+                    ui.selectable_value(&mut b.style, s, s.label());
+                }
+            })
+            .response
+            .on_hover_text("How it is built: fibre flatwork on rod magnets, or moulded");
+        ui.end_row();
         row(ui, "Channel height", mm(&mut b.channel_height_mm, 40.0))
             .on_hover_text("Flange to flange, along the traverse");
         row(ui, "Core width", mm(&mut b.core_width_mm, 60.0));
         row(ui, "Core length", mm(&mut b.core_length_mm, 120.0));
+        ui.label("Corner radius");
+        ui.horizontal(|ui| {
+            let half = b.core_width_mm.min(b.core_length_mm) / 2.0;
+            ui.add(mm(&mut b.corner_radius_mm, half));
+            if ui
+                .small_button("round ends")
+                .on_hover_text("Fully round ends, as wound on rod magnets")
+                .clicked()
+            {
+                b.corner_radius_mm = half;
+            }
+        });
+        ui.end_row();
         row(ui, "Build depth", mm(&mut b.build_depth_mm, 40.0))
             .on_hover_text("How deep the coil may build before the bobbin is full");
     });
+
+    // Looks only: the lay doesn't depend on these. Blank fields follow the
+    // kind and the core.
+    let u = machine::usual(b, b.build_depth_mm as f32);
+    let t = &mut b.detail;
+    ui.add_space(4.0);
+    heading(ui, "Flanges");
+    grid(ui, "bobbin-flanges", |ui| {
+        over(
+            ui,
+            "Length",
+            &mut t.flange_length_mm,
+            u.flange_length,
+            150.0,
+        );
+        over(ui, "Width", &mut t.flange_width_mm, u.flange_width, 80.0);
+        over(
+            ui,
+            "Corner radius",
+            &mut t.flange_corner_mm,
+            u.flange_corner,
+            40.0,
+        );
+        over(
+            ui,
+            "Top thickness",
+            &mut t.top_thickness_mm,
+            u.top_thickness,
+            10.0,
+        );
+        over(
+            ui,
+            "Bottom thickness",
+            &mut t.bottom_thickness_mm,
+            u.bottom_thickness,
+            10.0,
+        );
+    });
+    ui.add_space(4.0);
+    heading(ui, "Poles");
+    grid(ui, "bobbin-poles", |ui| {
+        ui.label("Count");
+        ui.horizontal(|ui| {
+            let mut n = t.pole_count.unwrap_or(u.pole_count);
+            if ui.add(DragValue::new(&mut n).range(0..=12)).changed() {
+                t.pole_count = Some(n);
+            }
+            if t.pole_count.is_none() {
+                ui.weak("auto");
+            }
+            reset(ui, &mut t.pole_count);
+        });
+        ui.end_row();
+        over(ui, "Spread", &mut t.pole_spread_mm, u.pole_spread, 120.0);
+        over(
+            ui,
+            "Diameter",
+            &mut t.pole_diameter_mm,
+            u.pole_diameter,
+            20.0,
+        );
+        over(
+            ui,
+            "Height above top",
+            &mut t.pole_height_mm,
+            u.pole_height,
+            20.0,
+        );
+    });
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                !b.detail.is_default(),
+                egui::Button::new("Reset to kind defaults"),
+            )
+            .on_hover_text("Flanges and poles follow the kind and the core again")
+            .clicked()
+        {
+            b.detail = Default::default();
+        }
+    });
+}
+
+fn heading(ui: &mut Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().strong().weak());
+}
+
+/// A size that follows the kind until it is set. Shows the value in use;
+/// dragging or typing sets it, the arrow puts it back.
+fn over(ui: &mut Ui, label: &str, v: &mut Option<f64>, usual: f32, max: f64) {
+    ui.label(label);
+    ui.horizontal(|ui| {
+        let mut x = v.unwrap_or(usual as f64);
+        let r = ui.add(mm(&mut x, max));
+        if r.changed() {
+            *v = Some(x);
+        }
+        if v.is_none() {
+            ui.weak("auto");
+        }
+        reset(ui, v);
+    });
+    ui.end_row();
+}
+
+fn reset<T>(ui: &mut Ui, v: &mut Option<T>) {
+    if v.is_some()
+        && ui
+            .small_button("↺")
+            .on_hover_text("Back to the kind's size")
+            .clicked()
+    {
+        *v = None;
+    }
 }
 
 pub fn wire(ui: &mut Ui, d: &mut Design) {
@@ -286,7 +427,146 @@ pub fn section_form(ui: &mut Ui, d: &mut Design, i: usize) {
         return;
     };
     let window = channel - s.inset_start_mm - s.inset_end_mm - od;
-    section(ui, i, s, window, od);
+    section(ui, i, s, window, od, true);
+}
+
+/// The winding as one choice: how the guide lays the wire, and how much to
+/// wind. A design built from several sections shows them as a list instead.
+pub fn winding(ui: &mut Ui, d: &mut Design) {
+    let od = d.wire_spec().map_or(0.071, |w| w.od_mm);
+    let channel = d.bobbin.channel_height_mm;
+    let mut target = d.auto.target_dcr_kohm;
+    let total = d.total_turns();
+    grid(ui, "winding-amount", |ui| {
+        ui.label("Wind to");
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(target.is_none(), "Turns")
+                .on_hover_text("Wind a set number of turns")
+                .clicked()
+            {
+                target = None;
+            }
+            if ui
+                .selectable_label(target.is_some(), "Resistance")
+                .on_hover_text(
+                    "Wind until the coil reaches a DCR: the turns are worked out \
+                     on the laid coil and follow every change",
+                )
+                .clicked()
+                && target.is_none()
+            {
+                target = Some(6.0);
+            }
+        });
+        ui.end_row();
+        match &mut target {
+            Some(t) => {
+                row(
+                    ui,
+                    "DCR",
+                    DragValue::new(t)
+                        .range(0.1..=50.0)
+                        .speed(0.01)
+                        .fixed_decimals(2)
+                        .suffix(" kΩ"),
+                );
+                ui.label("Turns");
+                ui.weak(format!("{total} (worked out)"));
+                ui.end_row();
+            }
+            None if d.sections.len() == 1 => {
+                row(
+                    ui,
+                    "Turns",
+                    DragValue::new(&mut d.sections[0].turns)
+                        .range(1..=100_000)
+                        .speed(10.0),
+                );
+            }
+            None => {
+                ui.label("Turns");
+                ui.weak(format!("{total} in all"));
+                ui.end_row();
+            }
+        }
+    });
+    d.auto.target_dcr_kohm = target;
+    ui.add_space(6.0);
+
+    if d.sections.len() == 1 {
+        let s = &mut d.sections[0];
+        let window = channel - s.inset_start_mm - s.inset_end_mm - od;
+        section(ui, 0, s, window, od, false);
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new("Advanced: wind in sections")
+            .id_salt("winding-advanced")
+            .show(ui, |ui| {
+                ui.label(
+                    "Some winders lay a few perfect layers under and over the \
+                     scatter, to seat the wire on the bobbin and to finish it \
+                     neatly. Each part is then a section, wound one after another.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Add a layered base").clicked() {
+                        add_layers(d, true);
+                    }
+                    if ui.button("Add a layered cover").clicked() {
+                        add_layers(d, false);
+                    }
+                });
+            });
+    } else {
+        ui.label(format!(
+            "Wound in {} sections, one after another:",
+            d.sections.len()
+        ));
+        let fill = d
+            .auto
+            .target_dcr_kohm
+            .map(|_| winder_core::auto::fill_index(d));
+        for (i, s) in d.sections.iter().enumerate() {
+            ui.weak(format!(
+                "  {}. {} · {} turns{}",
+                i + 1,
+                s.pattern.label(),
+                s.turns,
+                if fill == Some(i) {
+                    " (takes up the DCR)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        ui.label("Edit each one under Sections in the Browser.");
+        ui.add_space(4.0);
+        if ui
+            .button("Make it one winding")
+            .on_hover_text("Keep the biggest section's pattern for all the turns")
+            .clicked()
+        {
+            let i = winder_core::auto::fill_index(d);
+            let mut one = d.sections[i].clone();
+            one.turns = total;
+            d.sections = vec![one];
+            d.auto.fill_section = None;
+        }
+    }
+}
+
+/// Put 200 turns of perfect layers under (or over) the winding.
+fn add_layers(d: &mut Design, base: bool) {
+    let main = winder_core::auto::fill_index(d);
+    let take = 200.min(d.sections[main].turns.saturating_sub(1));
+    if take == 0 {
+        return;
+    }
+    d.sections[main].turns -= take;
+    if base {
+        d.sections.insert(0, Section::layer(take));
+    } else {
+        d.sections.push(Section::layer(take));
+    }
 }
 
 fn scatter_default(seed: u64, side_by_side: f64) -> Pattern {
@@ -319,14 +599,16 @@ fn tpl_row(ui: &mut Ui, label: &str, tpl: &mut f64, min: f64, window: f64, od: f
     ui.end_row();
 }
 
-fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64) {
+fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: bool) {
     let side_by_side = (window / od).max(1.0).round();
     grid(ui, ("section-grid", i), |ui| {
-        row(
-            ui,
-            "Turns",
-            DragValue::new(&mut s.turns).range(1..=100_000).speed(10.0),
-        );
+        if turns {
+            row(
+                ui,
+                "Turns",
+                DragValue::new(&mut s.turns).range(1..=100_000).speed(10.0),
+            );
+        }
         ui.label("Pattern");
         ui.horizontal(|ui| {
             let kind = s.pattern.label();
@@ -492,5 +774,9 @@ fn row(ui: &mut Ui, label: &str, widget: impl egui::Widget) -> egui::Response {
 }
 
 fn mm(v: &mut f64, max: f64) -> DragValue<'_> {
-    DragValue::new(v).range(0.0..=max).speed(0.05).suffix(" mm")
+    DragValue::new(v)
+        .range(0.0..=max)
+        .speed(0.05)
+        .max_decimals(2)
+        .suffix(" mm")
 }

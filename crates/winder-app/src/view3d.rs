@@ -857,6 +857,7 @@ pub fn coil_3d(
     d: &Design,
     c: &Computed,
     upto: f64,
+    phase: f32,
     cam: &mut Camera,
     renderer: Option<&Arc<Mutex<Renderer>>>,
 ) {
@@ -948,7 +949,8 @@ pub fn coil_3d(
         0.35 * r[0][2] + 0.6 * r[1][2] + 0.72 * r[2][2],
     ]);
     let upto = upto.clamp(0.0, turns as f64);
-    let feed = Feed::at(d, c, upto, guide_r, guide_angle);
+    let feed = Feed::at(d, c, upto, phase, guide_r, guide_angle);
+    let upto = feed.drawn;
     let mut free = Vec::new();
     strip(&mut free, &feed.free_wire(upto as f32));
     let frame = Frame {
@@ -1012,10 +1014,36 @@ struct Feed {
     eyelet: [f32; 3],
     /// Where the wire meets the coil, in the world.
     contact: [f32; 3],
+    /// Turns laid so far, to the contact point.
+    drawn: f64,
+}
+
+/// The point at radius `r` behind the contact at `u`, along the coil's
+/// tangent there: where the eyelet must be for the wire to touch at `u`.
+fn eyelet_from(core: &Core, u: f32, z: f32, r: f32) -> [f32; 2] {
+    let (p, _) = core.at(u, z);
+    let (q, _) = core.at(u + 1e-3, z);
+    let t = {
+        let (dx, dz) = (q[0] - p[0], q[1] - p[1]);
+        let l = (dx * dx + dz * dz).sqrt().max(1e-9);
+        [dx / l, dz / l]
+    };
+    let pt = p[0] * t[0] + p[1] * t[1];
+    let pp = p[0] * p[0] + p[1] * p[1];
+    let back = pt + (pt * pt - pp + r * r).max(0.0).sqrt();
+    [p[0] - t[0] * back, p[1] - t[1] * back]
 }
 
 impl Feed {
-    fn at(d: &Design, c: &Computed, upto: f64, guide_r: f32, guide_angle: f32) -> Feed {
+    /// The feed at `upto` turns, with the spindle `phase` of the way
+    /// through the turn under way (0..1).
+    ///
+    /// The spindle turns steadily, so the angle is the clock, not the share
+    /// of the wire laid. Along a long side the tangent from the eyelet
+    /// barely moves while the side sweeps past, so that whole side is laid
+    /// in a moment; round the ends the contact creeps. So the contact point
+    /// is found from the angle, not the other way round.
+    fn at(d: &Design, c: &Computed, upto: f64, phase: f32, guide_r: f32, guide_angle: f32) -> Feed {
         let core = core_of(d);
         let total = c.cross.turn_count();
         let guide_y = guide_at(c, upto) as f32;
@@ -1029,42 +1057,59 @@ impl Feed {
                 theta: 0.0,
                 eyelet,
                 contact: eyelet,
+                drawn: 0.0,
             };
         }
-        let (n, u) = if upto >= total as f64 {
-            (total - 1, 0.9999)
+        let done = upto >= total as f64;
+        let n = (upto.floor() as usize).min(total - 1);
+        // Where the eyelet sits, seen from the bobbin, for each contact
+        // point round turn n: it only ever moves one way, once round.
+        const K: usize = 256;
+        let mut table = Vec::with_capacity(K + 1);
+        let mut last: Option<f32> = None;
+        for k in 0..=K {
+            let u = k as f32 / K as f32 * 0.9999;
+            let (_, z) = lay_at(&c.cross, n, u);
+            let g = eyelet_from(&core, u, z, guide_r);
+            let mut a = g[1].atan2(g[0]);
+            if let Some(prev) = last {
+                a = prev + wrap_angle(a - prev);
+            }
+            table.push((u, a));
+            last = Some(a);
+        }
+        let (a0, a1) = (table[0].1, table[K].1);
+        let want = a0 + (a1 - a0) * phase.clamp(0.0, 0.9999);
+        let i = table.partition_point(|&(_, a)| a < want).clamp(1, K);
+        let ((u0, b0), (u1, b1)) = (table[i - 1], table[i]);
+        let u = if b1 > b0 {
+            u0 + (u1 - u0) * (want - b0) / (b1 - b0)
         } else {
-            (upto.floor() as usize, upto.fract() as f32)
+            u1
         };
         let (y, z) = lay_at(&c.cross, n, u);
         let (p, _) = core.at(u, z);
-        let (q, _) = core.at(u + 1e-3, z);
-        let t = {
-            let (dx, dz) = (q[0] - p[0], q[1] - p[1]);
-            let l = (dx * dx + dz * dz).sqrt().max(1e-9);
-            [dx / l, dz / l]
+        let theta = guide_angle - want;
+        let drawn = if done {
+            total as f64
+        } else {
+            n as f64 + u as f64
         };
-        // Back along the tangent from the contact to the eyelet's radius.
-        let pt = p[0] * t[0] + p[1] * t[1];
-        let pp = p[0] * p[0] + p[1] * p[1];
-        let back = pt + (pt * pt - pp + guide_r * guide_r).max(0.0).sqrt();
-        let g = [p[0] - t[0] * back, p[1] - t[1] * back];
-        // Turn the bobbin so that point faces the eyelet.
-        let theta = guide_angle - g[1].atan2(g[0]);
+        // The guide is where the toolpath has it at this moment.
+        let eyelet = [eyelet[0], guide_at(c, drawn) as f32, eyelet[2]];
         Feed {
             theta,
             eyelet,
             contact: spun([p[0], y, p[1]], theta),
+            drawn,
         }
     }
 
     /// The wire from the spool's side, through the eyelet, to the coil.
     fn free_wire(&self, turn: f32) -> Vec<([f32; 3], [f32; 3], f32)> {
+        // Down from the tensioner above, round the eyelet, out to the coil.
         let e = self.eyelet;
-        let (cx, cz) = (e[0], e[2]);
-        let l = (cx * cx + cz * cz).sqrt().max(1e-6);
-        let out = [cx / l, 0.0, cz / l];
-        let from = [e[0] + out[0] * 40.0, e[1] + 70.0, e[2] + out[2] * 40.0];
+        let from = [e[0], e[1] + 90.0, e[2]];
         let up = [0.0, 1.0, 0.0];
         vec![(from, up, turn), (e, up, turn), (self.contact, up, turn)]
     }
@@ -1200,8 +1245,17 @@ mod tests {
         let g = Geometry::build(&d, &c);
         let (r, a) = (g.parts.guide_r, g.parts.guide_angle);
         let core = core_of(&d);
-        for upto in [10.25, 1234.6, 4000.9] {
-            let f = Feed::at(&d, &c, upto, r, a);
+        let mut last = None;
+        for (turn, phase) in [(10.0, 0.1), (10.0, 0.3), (1234.0, 0.6), (4000.0, 0.95)] {
+            let f = Feed::at(&d, &c, turn, phase, r, a);
+            // A later moment never lays less wire.
+            if let Some((t, dr)) = last
+                && t == turn
+            {
+                assert!(f.drawn >= dr);
+            }
+            last = Some((turn, f.drawn));
+            let upto = f.drawn;
             // The eyelet stays where the machine has it.
             let er = (f.eyelet[0].powi(2) + f.eyelet[2].powi(2)).sqrt();
             assert!((er - r).abs() < 1e-3);
@@ -1218,7 +1272,7 @@ mod tests {
                 (w[0] * w[0] + w[2] * w[2]).sqrt(),
             );
             let cos = (t[0] * w[0] + t[2] * w[2]) / (lt * lw);
-            assert!(cos > 0.999, "upto {upto}: cos {cos}");
+            assert!(cos > 0.995, "upto {upto}: cos {cos}");
         }
     }
 

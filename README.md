@@ -77,19 +77,36 @@ designs/         example designs
 ### Design editor
 
 ```bash
-cargo run --release -p winder-app -- designs/strat-vintage.toml
+cargo run --release -p winder-app                               # a new Strat design
+cargo run --release -p winder-app -- designs/strat-vintage.toml # or open a file
 ```
 
 The editor is laid out like Fusion 360. The toolbar has three groups:
 **CREATE** adds a layer, helix or scatter section, **INSPECT** picks the
 view, and **MAKE** exports G-code or loads a machine profile. The
 **Browser** floats over the canvas on the left. Click a node (bobbin, wire,
-speed, wire path, estimate inputs or a section) to open its edit dialog.
+speed, wire path, estimate inputs or the winding) to open its edit dialog.
 Changes show live, OK keeps them and Cancel or Esc puts them back. The
 **timeline** along the bottom shows the sections as features, sized by
 their turns. Drag it to scrub the wind and play it back at 1× to 1000×
 speed. Double-click a section to edit it, or right-click it to duplicate,
 move or delete it. **Properties** floats on the right.
+
+**Winding** is one choice: how the guide lays the wire (perfect layers, a
+helix or scatter) and how much to wind, as a number of turns or as a
+resistance to reach. That is all most pickups need. Under *Advanced* you can
+add a few perfect layers under or over the scatter, as some winders do to
+seat the wire and finish neatly; the winding is then a list of **sections**
+wound one after another, shown under the Winding node, and *Make it one
+winding* folds them back together.
+
+**Bobbin** can be set to anything: the kind (Strat, Tele bridge or neck,
+humbucker, P-90 or plain), the channel, the core's width, length and corner
+radius, the flanges' size, corner and thickness, and the poles' count,
+spread, diameter and height. Flange and pole sizes follow the kind and the
+core until you set them (they show *auto*), and *Reset to kind defaults*
+puts them back. Only the channel, the core and the build depth change how
+the wire lays; the rest is how the bobbin looks on the machine.
 
 The design follows your changes (**Targets and rules** in the Browser):
 

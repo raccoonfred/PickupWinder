@@ -188,9 +188,85 @@ pub struct Parts {
     pub length: f32,
 }
 
-/// Pole positions along x: six, evenly spread.
-fn poles(spread: f32) -> impl Iterator<Item = (usize, f32)> {
-    (0..6).map(move |i| (i, -spread / 2.0 + spread * i as f32 / 5.0))
+/// Pole positions along x, evenly spread over `spread`.
+fn poles(count: u32, spread: f32) -> impl Iterator<Item = (usize, f32)> {
+    let n = count as usize;
+    (0..n).map(move |i| {
+        let x = if n > 1 {
+            -spread / 2.0 + spread * i as f32 / (n - 1) as f32
+        } else {
+            0.0
+        };
+        (i, x)
+    })
+}
+
+/// The sizes the model is drawn with: the kind's usual flatwork and poles,
+/// with anything set in the bobbin's `detail` taking their place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dims {
+    pub flange_length: f32,
+    pub flange_width: f32,
+    pub flange_corner: f32,
+    pub top_thickness: f32,
+    pub bottom_thickness: f32,
+    pub pole_count: u32,
+    pub pole_spread: f32,
+    pub pole_diameter: f32,
+    /// How far the tallest pole stands above the top flange.
+    pub pole_height: f32,
+}
+
+/// The kind's usual sizes for this core and build depth, ignoring `detail`.
+pub fn usual(b: &Bobbin, depth: f32) -> Dims {
+    let (w, l) = (b.core_width_mm as f32, b.core_length_mm as f32);
+    let r_core = b.corner_r() as f32;
+    let d = w + 2.0 * depth;
+    let (flange_length, flange_width, flange_corner, top_thickness, bottom_thickness) =
+        match b.style {
+            Style::Strat => (l + 11.0, d + 0.8, d * 0.42, 1.6, 2.4),
+            Style::TeleBridge => (l + 12.0, d + 1.5, 4.0, 1.6, 1.6),
+            Style::TeleNeck => (l + 8.0, d + 1.0, d * 0.45, 1.6, 1.6),
+            Style::Humbucker => (l + 10.0, d, 1.5, 1.6, 1.6),
+            Style::P90 => (l + 10.0, d + 1.0, 4.0, 1.6, 1.6),
+            Style::Generic => (l + 2.0 * depth + 3.0, d + 3.0, r_core + depth, 1.6, 1.6),
+        };
+    let (pole_count, pole_spread, pole_diameter, pole_height) = match b.style {
+        Style::Strat => (6, l - w, w, 3.2),
+        Style::TeleBridge | Style::TeleNeck => (6, l - w, w, 0.8),
+        Style::Humbucker => (6, (l - w).min(49.2), 5.0, 1.4),
+        Style::P90 => (6, (l - w).min(49.2), 4.8, 1.4),
+        Style::Generic => (0, l - w, w.min(5.0), 1.0),
+    };
+    Dims {
+        flange_length,
+        flange_width,
+        flange_corner,
+        top_thickness,
+        bottom_thickness,
+        pole_count,
+        pole_spread: pole_spread.max(0.0),
+        pole_diameter,
+        pole_height,
+    }
+}
+
+/// The sizes to draw: the usual ones with `detail` laid over them.
+pub fn dims(b: &Bobbin, depth: f32) -> Dims {
+    let u = usual(b, depth);
+    let t = &b.detail;
+    let or = |v: Option<f64>, d: f32| v.map_or(d, |v| v as f32);
+    Dims {
+        flange_length: or(t.flange_length_mm, u.flange_length),
+        flange_width: or(t.flange_width_mm, u.flange_width),
+        flange_corner: or(t.flange_corner_mm, u.flange_corner),
+        top_thickness: or(t.top_thickness_mm, u.top_thickness),
+        bottom_thickness: or(t.bottom_thickness_mm, u.bottom_thickness),
+        pole_count: t.pole_count.unwrap_or(u.pole_count),
+        pole_spread: or(t.pole_spread_mm, u.pole_spread),
+        pole_diameter: or(t.pole_diameter_mm, u.pole_diameter),
+        pole_height: or(t.pole_height_mm, u.pole_height),
+    }
 }
 
 pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
@@ -204,33 +280,12 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
     let mut spin = Mesh::default();
     let mut top = Mesh::default();
 
-    // Flange outlines and thicknesses for each kind.
-    let (flange_len, flange_wid, flange_r, t_top, t_bottom) = match b.style {
-        Style::Strat => (
-            l + 11.0,
-            w + 2.0 * depth + 0.8,
-            (w + 2.0 * depth) * 0.42,
-            1.6,
-            2.4,
-        ),
-        Style::TeleBridge => (l + 12.0, w + 2.0 * depth + 1.5, 4.0, 1.6, 1.6),
-        Style::TeleNeck => (
-            l + 8.0,
-            w + 2.0 * depth + 1.0,
-            (w + 2.0 * depth) * 0.45,
-            1.6,
-            1.6,
-        ),
-        Style::Humbucker => (l + 10.0, w + 2.0 * depth, 1.5, 1.6, 1.6),
-        Style::P90 => (l + 10.0, w + 2.0 * depth + 1.0, 4.0, 1.6, 1.6),
-        Style::Generic => (
-            l + 2.0 * depth + 3.0,
-            w + 2.0 * depth + 3.0,
-            r_core + depth,
-            1.6,
-            1.6,
-        ),
-    };
+    let dm = dims(b, b.build_depth_mm as f32);
+    // A flange never comes out smaller than the core it holds.
+    let flange_len = dm.flange_length.max(l);
+    let flange_wid = dm.flange_width.max(w);
+    let flange_r = dm.flange_corner;
+    let (t_top, t_bottom) = (dm.top_thickness.max(0.2), dm.bottom_thickness.max(0.2));
     let outline = rounded_rect(flange_len, flange_wid, flange_r);
     let fibre = matches!(b.style, Style::Strat | Style::TeleBridge | Style::TeleNeck);
     let body = if fibre { FIBRE } else { PLASTIC };
@@ -238,20 +293,23 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
     top.prism(&outline, h, h + t_top, body);
     let mut length = flange_len;
 
-    let spread = l - w;
+    let spread = dm.pole_spread;
+    let pole_r = dm.pole_diameter / 2.0;
     match b.style {
         Style::Strat | Style::TeleBridge | Style::TeleNeck => {
             // Rod magnets from the bottom of the bottom plate, through the
             // top plate. The Strat's '54-style stagger (in inches):
             // .684 .687 .717 .718 .636 .657.
-            let r = w / 2.0;
             let stagger = [0.684f32, 0.687, 0.717, 0.718, 0.636, 0.657];
-            for (i, x) in poles(spread) {
+            let tallest = h + t_top + dm.pole_height;
+            for (i, x) in poles(dm.pole_count, spread) {
                 let top_y = match b.style {
-                    Style::Strat => -t_bottom + stagger[i] / 0.718 * (t_bottom + h + t_top + 3.2),
-                    _ => h + t_top + 0.8,
+                    Style::Strat if dm.pole_count == 6 => {
+                        -t_bottom + stagger[i] / 0.718 * (t_bottom + tallest)
+                    }
+                    _ => tallest,
                 };
-                spin.cylinder(x, 0.0, r, -t_bottom - 0.01, top_y, ALNICO);
+                spin.cylinder(x, 0.0, pole_r, -t_bottom - 0.01, top_y, ALNICO);
             }
             // Lead-out eyelets in the bottom plate.
             let ez = flange_wid / 2.0 - 1.3;
@@ -276,15 +334,7 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
             // Moulded core wall, then pole screws through the top.
             let core = rounded_rect(l, w, r_core);
             spin.prism(&core, 0.0, h, PLASTIC);
-            let screw_r = if b.style == Style::P90 { 2.4 } else { 2.5 };
-            for (_, x) in poles(spread.min(49.2)) {
-                spin.cylinder(x, 0.0, screw_r, h + t_top, h + t_top + 1.4, NICKEL);
-                spin.cuboid(
-                    [x - screw_r, h + t_top + 1.0, -0.35],
-                    [x + screw_r, h + t_top + 1.45, 0.35],
-                    HOLE,
-                );
-            }
+            screws(&mut spin, &dm, h + t_top);
             if b.style == Style::P90 {
                 // Mounting ears at each end.
                 for s in [-1.0f32, 1.0] {
@@ -298,6 +348,7 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
         Style::Generic => {
             let core = rounded_rect(l, w, r_core);
             spin.prism(&core, 0.0, h, [0.55, 0.55, 0.58, 1.0]);
+            screws(&mut spin, &dm, h + t_top);
         }
     }
 
@@ -402,6 +453,16 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
     }
 }
 
+/// Slotted pole screws standing on the top flange at height `y`.
+fn screws(spin: &mut Mesh, dm: &Dims, y: f32) {
+    let r = dm.pole_diameter / 2.0;
+    let top = y + dm.pole_height;
+    for (_, x) in poles(dm.pole_count, dm.pole_spread) {
+        spin.cylinder(x, 0.0, r, y, top, NICKEL);
+        spin.cuboid([x - r, top - 0.4, -0.35], [x + r, top + 0.05, 0.35], HOLE);
+    }
+}
+
 /// `p` turned by `a` about the origin, then moved to `to`.
 fn rot(p: [f32; 2], a: f32, to: [f32; 2]) -> [f32; 2] {
     let (s, c) = a.sin_cos();
@@ -411,6 +472,24 @@ fn rot(p: [f32; 2], a: f32, to: [f32; 2]) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detail_overrides_the_kind() {
+        let mut b = Bobbin::preset("strat").unwrap();
+        let u = usual(&b, 6.0);
+        assert_eq!(u.pole_count, 6);
+        b.detail.pole_count = Some(4);
+        b.detail.flange_length_mm = Some(80.0);
+        let d = dims(&b, 6.0);
+        assert_eq!(d.pole_count, 4);
+        assert_eq!(d.flange_length, 80.0);
+        assert_eq!(d.flange_width, u.flange_width);
+        // Four magnets fewer than six: the model has fewer triangles.
+        let six = build(&Bobbin::preset("strat").unwrap(), 4.0, 25.0);
+        let four = build(&b, 4.0, 25.0);
+        assert!(four.spin.0.len() < six.spin.0.len());
+        assert!((four.length - 80.0).abs() < 1e-3);
+    }
 
     #[test]
     fn every_preset_builds_a_closed_model() {

@@ -22,7 +22,7 @@ pub mod toolpath;
 pub mod wire;
 
 pub use auto::Auto;
-pub use bobbin::{Bobbin, Style};
+pub use bobbin::{Bobbin, Detail, Style};
 pub use design::{Design, DesignError, Direction, Pattern, Section};
 pub use lay::{CrossSection, Laid, LaySettings};
 pub use physics::{Estimate, EstimateInput, estimate};

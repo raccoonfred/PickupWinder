@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     perfect-layer section's number of layers.
   - With a **target DCR**, the fill section's turns are solved on the laid
     coil to reach it, by the editor and by the CLI.
+- **Fully custom bobbin.** The bobbin dialog sets the kind, the core's
+  corner radius, the flanges (length, width, corner, top and bottom
+  thickness) and the poles (count, spread, diameter, height). These go in
+  an optional `[bobbin.detail]` table; anything left out follows the kind.
+- **Winding as one choice.** The Browser has one Winding node: pattern, and
+  turns or a target resistance. Sections are now an advanced option (a
+  layered base or cover), and new designs start as one scatter winding.
+
+### Fixed
+- The bobbin in 3D turns steadily. Its angle now runs with the turn count
+  and the wire's contact point follows from it, so it no longer stalls on
+  the long sides and whips round the ends. Fast playback shows a steady
+  spin instead of a strobing one, and the supply wire comes down to the
+  eyelet from above.
 
 ### Changed
 - **Real bobbins and a real winder in 3D.**
