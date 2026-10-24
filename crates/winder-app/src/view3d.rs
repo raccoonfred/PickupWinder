@@ -850,7 +850,12 @@ impl Renderer {
             // The spindle and everything on it. When it turns further in one
             // frame than the eye can follow, it is drawn as a camera would
             // see it: smeared over the angle it swept during the frame.
-            let ghosts = if f.sweep > BLUR_FROM { BLUR_GHOSTS } else { 1 };
+            // One copy every ~11°, up to a full turn.
+            let ghosts = if f.sweep > BLUR_FROM {
+                ((f.sweep.min(TAU) / 0.2).ceil() as usize).clamp(8, BLUR_GHOSTS)
+            } else {
+                1
+            };
             let alpha = if ghosts > 1 {
                 1.0 - 0.1f32.powf(1.0 / ghosts as f32)
             } else {
@@ -885,9 +890,9 @@ impl Renderer {
 
 /// What one paint needs, copied into the callback.
 /// Turning more than this in one frame (rad) strobes, so the spindle is
-/// drawn blurred, from this many copies.
+/// drawn blurred, from at most this many copies.
 const BLUR_FROM: f32 = 2.0;
-const BLUR_GHOSTS: usize = 14;
+const BLUR_GHOSTS: usize = 32;
 
 struct Frame {
     mvp: [f32; 16],
