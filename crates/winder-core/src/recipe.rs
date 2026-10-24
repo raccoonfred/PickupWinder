@@ -114,6 +114,7 @@ fn import_one(name: &str, r: &Value) -> Result<Imported, DesignError> {
             temp_c: num(&["temp_c"], 20.0),
         },
         lay: LaySettings::default(),
+        auto: crate::Auto::default(),
         sections: vec![Section::with(turns, pattern)],
     };
     design.validate()?;

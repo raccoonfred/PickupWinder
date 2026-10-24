@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Settings that follow your changes** (`[auto]` in the design file,
+  **Targets and rules** in the editor):
+  - With **keep the lay**, changing the wire or the window scales each
+    section's turns per pass to keep its pitch, and keeps each
+    perfect-layer section's number of layers.
+  - With a **target DCR**, the fill section's turns are solved on the laid
+    coil to reach it, by the editor and by the CLI.
+
 ### Changed
 - **The editor now looks and moves like Fusion 360.** It has a light theme,
   a toolbar of CREATE / INSPECT / MAKE groups and a floating Browser. Edit
-  dialogs have OK and Cancel. The timeline shows the sections sized by
-  turns, with playback, scrubbing and a right-click menu. Properties floats
-  on the right.
+  dialogs have OK and Cancel. Properties floats on the right. Playback
+  controls sit in the status bar.
 - **3D navigation and the ViewCube work as in Fusion and Autodesk.**
   - Scroll zooms at the pointer, middle-drag pans and Shift + middle-drag
     orbits.

@@ -245,8 +245,23 @@ fn sim(d: &Design) -> Res {
     Ok(())
 }
 
+/// Reads a design and, if it sets a target DCR, solves its fill section's
+/// turns, as the editor does.
 fn load(path: &Path) -> Result<Design, String> {
-    Design::from_toml(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))
+    let err = |e: winder_core::DesignError| format!("{}: {e}", path.display());
+    let mut d = Design::from_toml(&read(path)?).map_err(err)?;
+    if let Some(s) = winder_core::auto::solve(&mut d).map_err(err)?
+        && d.sections[s.section].turns != s.turns_before
+    {
+        eprintln!(
+            "target {:.2} kΩ: section {} wound to {} turns (file says {})",
+            d.auto.target_dcr_kohm.unwrap_or_default(),
+            s.section + 1,
+            d.sections[s.section].turns,
+            s.turns_before
+        );
+    }
+    Ok(d)
 }
 
 fn read(path: &Path) -> Result<String, String> {

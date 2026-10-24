@@ -85,11 +85,28 @@ The editor is laid out like Fusion 360. The toolbar has three groups:
 view, and **MAKE** exports G-code or loads a machine profile. The
 **Browser** floats over the canvas on the left. Click a node (bobbin, wire,
 speed, wire path, estimate inputs or a section) to open its edit dialog.
-Changes show live, OK keeps them and Cancel or Esc puts them back. The
-**timeline** along the bottom shows the sections as features, sized by
-their turns. Drag it to scrub the wind and play it back at 1× to 1000×
-speed. Double-click a section to edit it, or right-click it to duplicate,
-move or delete it. **Properties** floats on the right.
+Changes show live, OK keeps them and Cancel or Esc puts them back.
+Right-click a section to duplicate, move or delete it. **Properties**
+floats on the right. The status bar plays the wind back at 1× to 1000×
+speed.
+
+The design follows your changes (**Targets and rules** in the Browser):
+
+- **Keep the lay** is on by default. Change the wire gauge, the channel or a
+  section's insets, and each section keeps its pitch in wire diameters
+  (its turns per pass are scaled). Each perfect-layer section keeps its
+  number of layers.
+- **Target DCR**: set the resistance you want. The fill section (the
+  biggest one, or one you pick) gets the turns that reach it on the laid
+  coil, and they are worked out again after every change. The other
+  sections keep their turns. The CLI does the same when it loads the
+  design.
+
+```toml
+[auto]
+target_dcr_kohm = 6.0
+fill_section = 2   # optional; default is the biggest section
+```
 
 - **3D** (the default) shows the bobbin and its flatwork, with every turn
   drawn as round copper wire around the core, exactly where the lay model

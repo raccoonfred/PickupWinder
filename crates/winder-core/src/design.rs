@@ -3,6 +3,7 @@
 //! Saved as TOML. See `designs/` in the repository for examples.
 
 use crate::{
+    auto::Auto,
     bobbin::Bobbin,
     lay::LaySettings,
     physics::EstimateInput,
@@ -34,6 +35,9 @@ pub struct Design {
     /// How the wire behaves between the guide and the coil.
     #[serde(default)]
     pub lay: LaySettings,
+    /// Settings that follow other settings.
+    #[serde(default, skip_serializing_if = "Auto::is_default")]
+    pub auto: Auto,
     pub sections: Vec<Section>,
 }
 
@@ -310,6 +314,7 @@ impl Design {
                 ..Default::default()
             },
             lay: LaySettings::default(),
+            auto: Auto::default(),
             sections: vec![
                 Section::layer(cover),
                 Section {

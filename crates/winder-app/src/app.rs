@@ -19,7 +19,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use winder_core::{Bobbin, Design, Pattern, recipe};
+use winder_core::{Bobbin, Design, Pattern, auto, recipe};
 use winder_gcode::MachineProfile;
 
 const WARN: Color32 = Color32::from_rgb(200, 90, 50);
@@ -33,6 +33,7 @@ enum Edit {
     Speed,
     WirePath,
     Estimate,
+    Auto,
     Section(usize),
 }
 
@@ -45,6 +46,7 @@ impl Edit {
             Edit::Speed => "EDIT SPEED".into(),
             Edit::WirePath => "EDIT WIRE PATH".into(),
             Edit::Estimate => "ESTIMATE INPUTS".into(),
+            Edit::Auto => "TARGETS AND RULES".into(),
             Edit::Section(i) => format!("EDIT SECTION {}", i + 1),
         }
     }
@@ -80,8 +82,9 @@ pub struct WinderApp {
     editing: Option<(Edit, Design)>,
     /// Section picked in the browser or on the timeline.
     selected: Option<usize>,
-    /// Section a timeline context menu was opened on.
-    menu_section: Option<usize>,
+    /// The design as it was last frame, to see what an edit changed; None
+    /// after opening a different design.
+    prev: Option<Design>,
 }
 
 impl WinderApp {
@@ -112,7 +115,7 @@ impl WinderApp {
             imported: Vec::new(),
             editing: None,
             selected: None,
-            menu_section: None,
+            prev: None,
         };
         if let Some(p) = path {
             app.open_path(p);
@@ -124,13 +127,50 @@ impl WinderApp {
         self.design != self.saved
     }
 
-    fn recompute(&mut self) {
+    /// Let settings that follow other settings catch up with an edit.
+    fn follow(&mut self) {
+        if let Some(prev) = &self.prev
+            && *prev != self.design
+        {
+            let changed = auto::follow(prev, &mut self.design);
+            if !changed.is_empty() {
+                let what: Vec<String> = changed
+                    .iter()
+                    .map(|f| format!("section {} {}", f.section + 1, f.what))
+                    .collect();
+                self.status = format!("Kept the lay: {}", what.join("; "));
+            }
+        }
+        self.prev = Some(self.design.clone());
+    }
+
+    fn recompute(&mut self, settled: bool) {
         if self
             .computed
             .as_ref()
             .is_some_and(|(d, _)| *d == self.design)
         {
             return;
+        }
+        // Hitting a target DCR lays the coil a few times, so it waits until
+        // a drag is let go.
+        if settled && self.design.auto.target_dcr_kohm.is_some() && self.design.validate().is_ok() {
+            let mut d = self.design.clone();
+            match auto::solve(&mut d) {
+                Ok(Some(s)) if d.sections[s.section].turns != s.turns_before => {
+                    self.status = format!(
+                        "Target {:.2} kΩ: section {} set to {} turns (was {}).",
+                        d.auto.target_dcr_kohm.unwrap_or_default(),
+                        s.section + 1,
+                        d.sections[s.section].turns,
+                        s.turns_before
+                    );
+                    self.design = d;
+                    self.prev = Some(self.design.clone());
+                }
+                Ok(_) => {}
+                Err(e) => self.error = Some(e.to_string()),
+            }
         }
         match Computed::new(&self.design) {
             Ok(c) => {
@@ -205,6 +245,7 @@ impl WinderApp {
             self.design = d.clone();
             self.saved = d;
             self.path = None;
+            self.prev = None;
             self.follow_end = true;
             self.status = format!("New design from the {preset} preset.");
         }
@@ -224,6 +265,7 @@ impl WinderApp {
             Ok(d) => {
                 self.design = d.clone();
                 self.saved = d;
+                self.prev = None;
                 self.status = format!("Opened {}", p.display());
                 self.path = Some(p);
                 self.follow_end = true;
@@ -551,6 +593,16 @@ impl WinderApp {
                             String::new(),
                             Edit::Estimate,
                         ),
+                        (
+                            Mark::Settings,
+                            "Targets and rules",
+                            match d.auto.target_dcr_kohm {
+                                Some(t) => format!("{t:.2} kΩ target"),
+                                None if d.auto.keep_lay => "keep the lay".into(),
+                                None => "off".into(),
+                            },
+                            Edit::Auto,
+                        ),
                     ];
                     for (mark, label, detail, e) in rows {
                         let on = self.editing.as_ref().is_some_and(|(x, _)| *x == e);
@@ -562,6 +614,7 @@ impl WinderApp {
                         .id_salt("browser-sections")
                         .default_open(true)
                         .show(ui, |ui| {
+                            let fill = d.auto.target_dcr_kohm.map(|_| auto::fill_index(d));
                             for (i, s) in d.sections.iter().enumerate() {
                                 let icon = pattern_icon(&s.pattern);
                                 let label = format!("{}  {}", i + 1, title_case(s.pattern.label()));
@@ -570,9 +623,14 @@ impl WinderApp {
                                     0.0,
                                     Mark::Feature(icon),
                                     &label,
-                                    &format!("{} turns", s.turns),
+                                    &if fill == Some(i) {
+                                        format!("{} turns · auto", s.turns)
+                                    } else {
+                                        format!("{} turns", s.turns)
+                                    },
                                     self.selected == Some(i),
-                                );
+                                )
+                                .on_hover_text(section_summary(i, s));
                                 if resp.clicked() {
                                     open_edit = Some(Edit::Section(i));
                                 }
@@ -633,6 +691,7 @@ impl WinderApp {
                     Edit::Speed => editor::speed(ui, d),
                     Edit::WirePath => editor::wire_path(ui, d),
                     Edit::Estimate => editor::estimate(ui, d),
+                    Edit::Auto => editor::auto(ui, d),
                     Edit::Section(i) => editor::section_form(ui, d, i),
                 }
                 if let Some(err) = &self.error {
@@ -811,212 +870,61 @@ impl WinderApp {
         });
     }
 
-    // ---------- timeline ----------
-
-    fn timeline(&mut self, ui: &mut Ui) {
+    /// Wind it: play from the start, pause, or jump to the finished coil.
+    fn playback(&mut self, ui: &mut Ui) {
         let total = self.total_turns();
-        let bounds: Vec<f64> = self
-            .computed
-            .as_ref()
-            .map(|(_, c)| c.section_bounds.clone())
-            .unwrap_or_default();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            if chrome::glyph_button(ui, Glyph::ToStart)
-                .on_hover_text("Back to the first turn")
-                .clicked()
-            {
-                self.scrub = 0.0;
-                self.playing = false;
-                self.follow_end = false;
-            }
-            if chrome::glyph_button(ui, Glyph::Back)
-                .on_hover_text("Previous section")
-                .clicked()
-            {
-                let now = self.scrub - 0.5;
-                self.scrub = bounds
-                    .iter()
-                    .rev()
-                    .copied()
-                    .find(|&b| b < now)
-                    .unwrap_or(0.0);
-                self.playing = false;
-                self.follow_end = false;
-            }
-            let g = if self.playing {
-                Glyph::Pause
-            } else {
-                Glyph::Play
-            };
-            if chrome::glyph_button(ui, g)
-                .on_hover_text(if self.playing { "Pause" } else { "Wind it" })
-                .clicked()
-            {
-                if !self.playing && self.scrub >= total {
-                    self.scrub = 0.0;
-                }
-                self.playing = !self.playing;
-                self.follow_end = false;
-            }
-            if chrome::glyph_button(ui, Glyph::Forward)
-                .on_hover_text("Next section")
-                .clicked()
-            {
-                let now = self.scrub + 0.5;
-                self.scrub = bounds.iter().copied().find(|&b| b > now).unwrap_or(total);
-                self.playing = false;
-                self.follow_end = self.scrub >= total;
-            }
-            if chrome::glyph_button(ui, Glyph::ToEnd)
-                .on_hover_text("The finished coil")
-                .clicked()
-            {
-                self.playing = false;
-                self.follow_end = true;
-            }
-            ui.add_space(6.0);
-            egui::ComboBox::from_id_salt("speed")
-                .selected_text(format!("{}×", self.speedup))
-                .width(62.0)
-                .show_ui(ui, |ui| {
-                    for s in [1.0, 10.0, 60.0, 300.0, 1000.0] {
-                        ui.selectable_value(&mut self.speedup, s, format!("{s}×"));
-                    }
-                })
-                .response
-                .on_hover_text("Playback speed, against the real winding speed");
-            ui.add_space(8.0);
-            let readout = 150.0;
-            let w = (ui.available_width() - readout).max(120.0);
-            self.feature_strip(ui, w, total);
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!("{:.0} / {:.0} turns", self.scrub.round(), total))
-                    .monospace()
-                    .color(chrome::INK),
-            );
-        });
-    }
-
-    /// Sections as features in a row, sized by their turns, with the marker
-    /// at the turn shown. Drag to scrub; click a section to select it,
-    /// double-click to edit it, right-click for more.
-    fn feature_strip(&mut self, ui: &mut Ui, width: f32, total: f64) {
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click_and_drag());
-        let Some((shown, _)) = &self.computed else {
-            return;
-        };
-        let sections = shown.sections.clone();
-        let sum: f64 = sections
-            .iter()
-            .map(|s| s.turns as f64)
-            .sum::<f64>()
-            .max(1.0);
-        let x_of = |t: f64| rect.left() + (t / sum) as f32 * rect.width();
-        let t_of = |x: f32| ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * sum;
-        let p = ui.painter_at(rect.expand(6.0));
-        p.rect_filled(rect, 3.0, Color32::from_gray(232));
-
-        let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
-        let mut start = 0.0;
-        let mut blocks = Vec::new();
-        for s in &sections {
-            let end = start + s.turns as f64;
-            blocks.push((x_of(start), x_of(end)));
-            start = end;
-        }
-        let under = |x: f32| blocks.iter().position(|&(a, b)| x >= a && x < b);
-        let hovered = pointer.and_then(|p| under(p.x));
-        let done_x = x_of(self.scrub.min(sum));
-        for (i, (s, &(a, b))) in sections.iter().zip(&blocks).enumerate() {
-            let r =
-                Rect::from_x_y_ranges(a + 1.0..=(b - 1.0).max(a + 2.0), rect.y_range().shrink(3.0));
-            let col = pattern_color(&s.pattern);
-            // Turns not wound yet at the marker are rolled back, as features
-            // after Fusion's marker are.
-            p.rect_filled(r, 2.0, col.gamma_multiply(0.3));
-            if done_x > r.left() {
-                let wound = Rect::from_min_max(r.min, pos2(done_x.min(r.right()), r.max.y));
-                p.rect_filled(wound, 2.0, col);
-            }
-            let stroke = if self.selected == Some(i) {
-                Stroke::new(2.0, BLUE)
-            } else if hovered == Some(i) {
-                Stroke::new(1.0, Color32::from_rgb(110, 180, 225))
-            } else {
-                Stroke::new(1.0, Color32::from_gray(170))
-            };
-            p.rect_stroke(r, 2.0, stroke, egui::StrokeKind::Inside);
-            if r.width() > 36.0 {
-                let icon =
-                    Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), vec2(16.0, 13.0));
-                chrome::draw_icon(&p, pattern_icon(&s.pattern), icon);
-            }
-            let label = format!("{} {}", title_case(s.pattern.label()), s.turns);
-            let galley = p.layout_no_wrap(label, FontId::proportional(11.0), chrome::INK);
-            if galley.size().x + 34.0 < r.width() {
-                p.galley(
-                    pos2(r.left() + 26.0, r.center().y - galley.size().y / 2.0),
-                    galley,
-                    chrome::INK,
-                );
-            }
-        }
-        // The marker.
-        let mx = done_x.clamp(rect.left(), rect.right());
-        p.line_segment(
-            [pos2(mx, rect.top() - 3.0), pos2(mx, rect.bottom() + 3.0)],
-            Stroke::new(2.0, Color32::from_gray(60)),
-        );
-        p.add(egui::Shape::convex_polygon(
-            vec![
-                pos2(mx - 5.0, rect.top() - 5.0),
-                pos2(mx + 5.0, rect.top() - 5.0),
-                pos2(mx, rect.top() + 1.0),
-            ],
-            Color32::from_gray(60),
-            Stroke::NONE,
-        ));
-
-        if resp.dragged()
-            && let Some(p) = resp.interact_pointer_pos()
+        ui.spacing_mut().item_spacing.x = 1.0;
+        if chrome::glyph_button(ui, Glyph::ToStart)
+            .on_hover_text("Back to the first turn")
+            .clicked()
         {
-            let t = t_of(p.x).round().min(total);
-            self.scrub = t;
+            self.scrub = 0.0;
             self.playing = false;
-            self.follow_end = t >= total;
+            self.follow_end = false;
         }
-        if resp.clicked() {
-            self.selected = pointer.and_then(|p| under(p.x));
-        }
-        if resp.double_clicked()
-            && let Some(i) = pointer.and_then(|p| under(p.x))
-        {
-            self.open_edit(Edit::Section(i));
-        }
-        if resp.secondary_clicked() {
-            self.menu_section = pointer.and_then(|p| under(p.x));
-        }
-        let resp = match hovered {
-            Some(i) => resp.on_hover_text_at_pointer(section_summary(i, &sections[i])),
-            None => resp,
+        let g = if self.playing {
+            Glyph::Pause
+        } else {
+            Glyph::Play
         };
-        let mut action = None;
-        let menu_section = self.menu_section;
-        resp.context_menu(|ui| {
-            if let Some(i) = menu_section {
-                ui.label(RichText::new(format!("Section {}", i + 1)).strong());
-                if let Some(a) = section_menu(ui) {
-                    action = Some((i, a));
-                }
+        if chrome::glyph_button(ui, g)
+            .on_hover_text(if self.playing {
+                "Pause"
             } else {
-                ui.label("Right-click a section");
+                "Watch it wind"
+            })
+            .clicked()
+        {
+            if !self.playing && self.scrub >= total {
+                self.scrub = 0.0;
             }
-        });
-        if let Some((i, a)) = action {
-            self.section_action(i, a);
+            self.playing = !self.playing;
+            self.follow_end = false;
         }
+        if chrome::glyph_button(ui, Glyph::ToEnd)
+            .on_hover_text("The finished coil")
+            .clicked()
+        {
+            self.playing = false;
+            self.follow_end = true;
+        }
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("speed")
+            .selected_text(format!("{}×", self.speedup))
+            .width(58.0)
+            .show_ui(ui, |ui| {
+                for s in [1.0, 10.0, 60.0, 300.0, 1000.0] {
+                    ui.selectable_value(&mut self.speedup, s, format!("{s}×"));
+                }
+            })
+            .response
+            .on_hover_text("Playback speed, against the real winding speed");
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(format!("{:.0} / {:.0} turns", self.scrub.round(), total))
+                .monospace()
+                .size(11.5),
+        );
     }
 
     fn advance_playback(&mut self, ui: &Ui) {
@@ -1065,14 +973,6 @@ fn pattern_icon(p: &Pattern) -> Icon {
     }
 }
 
-fn pattern_color(p: &Pattern) -> Color32 {
-    match p {
-        Pattern::Layer { .. } => Color32::from_rgb(160, 205, 236),
-        Pattern::Helix { .. } => Color32::from_rgb(240, 196, 150),
-        Pattern::Scatter { .. } => Color32::from_rgb(178, 218, 164),
-    }
-}
-
 fn section_summary(i: usize, s: &winder_core::Section) -> String {
     let how = match &s.pattern {
         Pattern::Layer { .. } => "perfect layers".to_string(),
@@ -1084,7 +984,7 @@ fn section_summary(i: usize, s: &winder_core::Section) -> String {
         }
     };
     format!(
-        "{}. {} · {} turns · {how}\nDouble-click to edit, right-click for more",
+        "{}. {} · {} turns · {how}\nClick to edit, right-click for more",
         i + 1,
         title_case(s.pattern.label()),
         s.turns
@@ -1132,9 +1032,11 @@ impl eframe::App for WinderApp {
             .frame(bar(Color32::WHITE, (8, 4)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
             .show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
-            .frame(bar(chrome::PANEL, (10, 3)))
+            .frame(bar(chrome::PANEL, (8, 3)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    self.playback(ui);
+                    ui.separator();
                     if let Some(e) = &self.error {
                         ui.colored_label(WARN, format!("Design problem: {e}"));
                     } else {
@@ -1142,13 +1044,12 @@ impl eframe::App for WinderApp {
                     }
                 });
             });
-        egui::Panel::bottom("timeline")
-            .frame(
-                bar(Color32::from_rgb(250, 250, 251), (8, 6))
-                    .stroke(Stroke::new(1.0, Color32::from_gray(214))),
-            )
-            .show(ui, |ui| self.timeline(ui));
-        self.recompute();
+        self.follow();
+        let settled = !ui.input(|i| i.pointer.any_down());
+        self.recompute(settled);
+        if !settled {
+            ui.ctx().request_repaint();
+        }
         self.advance_playback(ui);
         let canvas = egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1188,6 +1089,7 @@ impl eframe::App for WinderApp {
                 let r = self.imported.swap_remove(i);
                 self.design = r.design;
                 self.path = None;
+                self.prev = None;
                 self.follow_end = true;
                 self.status = format!("Imported \"{}\". Save it to keep it.", self.design.name);
                 self.imported.clear();

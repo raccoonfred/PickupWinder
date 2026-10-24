@@ -11,6 +11,7 @@
 //! Nothing here touches the GUI, files or the serial port, so all of it runs
 //! in tests and from the CLI.
 
+pub mod auto;
 pub mod bobbin;
 pub mod design;
 pub mod lay;
@@ -20,6 +21,7 @@ pub mod rng;
 pub mod toolpath;
 pub mod wire;
 
+pub use auto::Auto;
 pub use bobbin::Bobbin;
 pub use design::{Design, DesignError, Direction, Pattern, Section};
 pub use lay::{CrossSection, Laid, LaySettings};

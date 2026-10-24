@@ -62,6 +62,74 @@ pub fn wire_path(ui: &mut Ui, d: &mut Design) {
     });
 }
 
+/// Settings that follow other settings: keep the lay, and a target DCR.
+pub fn auto(ui: &mut Ui, d: &mut Design) {
+    ui.checkbox(
+        &mut d.auto.keep_lay,
+        "Keep the lay when the wire or bobbin changes",
+    )
+    .on_hover_text(
+        "Change the gauge, the channel or a section's insets and each section \
+         keeps its pitch in wire diameters (its turns per pass are scaled), \
+         and each perfect-layer section keeps its number of layers.",
+    );
+    ui.add_space(6.0);
+    let mut on = d.auto.target_dcr_kohm.is_some();
+    ui.horizontal(|ui| {
+        if ui
+            .checkbox(&mut on, "Target DCR")
+            .on_hover_text(
+                "Set the resistance you want: the fill section's turns are worked out \
+                 on the laid coil to reach it, and redone whenever anything changes.",
+            )
+            .changed()
+        {
+            d.auto.target_dcr_kohm = on.then_some(6.0);
+        }
+        if let Some(t) = &mut d.auto.target_dcr_kohm {
+            ui.add(
+                DragValue::new(t)
+                    .range(0.1..=50.0)
+                    .speed(0.01)
+                    .fixed_decimals(2)
+                    .suffix(" kΩ"),
+            );
+        }
+    });
+    if d.auto.target_dcr_kohm.is_some() {
+        let fill = match d.auto.fill_section {
+            Some(n) if n <= d.sections.len() => format!("section {n}"),
+            _ => format!(
+                "the biggest section ({})",
+                winder_core::auto::fill_index(d) + 1
+            ),
+        };
+        ui.horizontal(|ui| {
+            ui.label("Turns go into");
+            egui::ComboBox::from_id_salt("fill-section")
+                .selected_text(fill)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(d.auto.fill_section.is_none(), "the biggest section")
+                        .clicked()
+                    {
+                        d.auto.fill_section = None;
+                    }
+                    for (i, s) in d.sections.iter().enumerate() {
+                        let label = format!("section {} ({})", i + 1, s.pattern.label());
+                        if ui
+                            .selectable_label(d.auto.fill_section == Some(i + 1), label)
+                            .clicked()
+                        {
+                            d.auto.fill_section = Some(i + 1);
+                        }
+                    }
+                });
+        });
+        ui.weak("The other sections keep their turns.");
+    }
+}
+
 pub fn estimate(ui: &mut Ui, d: &mut Design) {
     ui.weak("Used by the tone estimate; the toolpath doesn't set these.");
     grid(ui, "estimate", |ui| {
