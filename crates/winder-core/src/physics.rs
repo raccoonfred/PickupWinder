@@ -17,7 +17,7 @@ use crate::{bobbin::Bobbin, wire::WireSpec};
 use serde::{Deserialize, Serialize};
 
 /// Copper resistance rises about 0.393 % per °C (annealed copper).
-const COPPER_ALPHA_PER_C: f64 = 0.00393;
+pub(crate) const COPPER_ALPHA_PER_C: f64 = 0.00393;
 /// Wheeler assumes an air core; a single-coil's open magnetic path reads
 /// lower. 0.62 lands a Strat-geometry 8000-turn coil at about 2.2 H.
 const INDUCTANCE_CALIBRATION: f64 = 0.62;

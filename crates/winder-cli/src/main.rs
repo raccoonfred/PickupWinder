@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use winder_core::{Bobbin, Design, estimate, generate, recipe};
+use winder_core::{Bobbin, CrossSection, Design, estimate, generate, recipe};
 use winder_gcode::{MachineProfile, post_grbl, verify};
 
 #[derive(Parser)]
@@ -40,6 +40,15 @@ enum Cmd {
         /// Machine profile TOML (default: Uno + CNC Shield v3 with GRBL 1.1).
         #[arg(short, long)]
         machine: Option<PathBuf>,
+    },
+    /// Draw the coil's cross-section (every turn where it lands) as SVG.
+    Preview {
+        design: PathBuf,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Draw only the first N turns.
+        #[arg(long)]
+        turns: Option<u32>,
     },
     /// Write the default machine profile and the GRBL settings it expects.
     Machine {
@@ -110,6 +119,23 @@ fn run(cmd: Cmd) -> Res {
                     p.stops
                 );
             }
+            Ok(())
+        }
+        Cmd::Preview { design, out, turns } => {
+            let d = load(&design)?;
+            let tp = generate(&d).map_err(|e| e.to_string())?;
+            let cs = CrossSection::build(&d, &tp, &d.wire_spec().map_err(|e| e.to_string())?);
+            let out = out.unwrap_or_else(|| design.with_extension("svg"));
+            let n = turns.map_or(cs.turns.len(), |t| t as usize);
+            fs::write(&out, svg(&d, &cs, n)).map_err(|e| format!("{}: {e}", out.display()))?;
+            println!(
+                "wrote {}: build {:.2} mm (mean {:.2}), {:.0} m, {:.2} kOhm from the lay",
+                out.display(),
+                cs.build_mm(),
+                cs.mean_build_mm(),
+                cs.length_m(),
+                cs.dcr_kohm(d.estimate.temp_c)
+            );
             Ok(())
         }
         Cmd::Machine { out } => {
@@ -183,6 +209,15 @@ fn sim(d: &Design) -> Res {
         st.max_y_mm,
         st.minutes
     );
+    let tp = generate(d).map_err(|e| e.to_string())?;
+    let cs = CrossSection::build(d, &tp, &wire);
+    println!(
+        "  from the lay: build {:.2} mm (mean {:.2}), wire {:.0} m, DCR {:.2} kOhm",
+        cs.build_mm(),
+        cs.mean_build_mm(),
+        cs.length_m(),
+        cs.dcr_kohm(d.estimate.temp_c)
+    );
     println!("  (DCR, L and C are estimates; log measured coils to calibrate them)");
     Ok(())
 }
@@ -220,4 +255,46 @@ fn slug(name: &str) -> String {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Cross-section as SVG: the channel between the flanges, the core along
+/// the bottom, one circle per turn shaded from first (dark) to last (light).
+fn svg(d: &Design, cs: &CrossSection, n: usize) -> String {
+    let scale = 60.0; // px per mm
+    let (w_mm, depth) = (cs.channel_mm, d.bobbin.build_depth_mm);
+    let (pad, flange) = (20.0, 12.0);
+    let width = w_mm * scale + 2.0 * (pad + flange);
+    let height = depth * scale + 2.0 * pad;
+    let x = |y: f64| pad + flange + y * scale;
+    let z = |z: f64| pad + (depth - z) * scale;
+    let mut s = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='{width:.0}' height='{height:.0}' viewBox='0 0 {width:.0} {height:.0}'>\n\
+         <rect width='100%' height='100%' fill='#16181c'/>\n\
+         <rect x='{:.1}' y='{:.1}' width='{flange}' height='{:.1}' fill='#555'/>\n\
+         <rect x='{:.1}' y='{:.1}' width='{flange}' height='{:.1}' fill='#555'/>\n\
+         <line x1='{:.1}' y1='{:.1}' x2='{:.1}' y2='{:.1}' stroke='#888' stroke-width='2'/>\n",
+        pad,
+        pad,
+        depth * scale,
+        x(w_mm),
+        pad,
+        depth * scale,
+        x(0.0),
+        z(0.0),
+        x(w_mm),
+        z(0.0),
+    );
+    let total = cs.turns.len().max(1) as f64;
+    let r = cs.od_mm / 2.0 * scale;
+    for t in cs.turns.iter().take(n) {
+        let f = t.n as f64 / total;
+        let (cr, cg, cb) = (90.0 + 140.0 * f, 40.0 + 90.0 * f, 18.0 + 40.0 * f);
+        s.push_str(&format!(
+            "<circle cx='{:.2}' cy='{:.2}' r='{r:.2}' fill='rgb({cr:.0},{cg:.0},{cb:.0})'/>\n",
+            x(t.y_mm),
+            z(t.z_mm)
+        ));
+    }
+    s.push_str("</svg>\n");
+    s
 }

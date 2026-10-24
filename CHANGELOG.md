@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Rust port, milestone 2: desktop design editor (`winder-app`).** An egui
+  app that edits a design and redraws it as you type: cross-section of every
+  turn (by turn order or section, with hover), lay plot, and build profile
+  against the bobbin limit, with scrub and 1x-1000x playback. It shows DCR
+  from the actual lay next to the layer-model estimate, and exports
+  verified G-code. It also opens and saves designs, imports Python recipes
+  and loads a machine profile.
+- **Cross-section from the toolpath** (`winder_core::lay`). Each turn comes
+  to rest in the lowest groove near the guide, so a layer pattern nests
+  (agrees with the validated layer model within 2 % on DCR) while scatter,
+  dwell and insets change the build and the DCR. Also available as
+  `winder preview` (SVG) and in `winder sim`.
 - **Rust port, milestone 1: design core, G-code and CLI.** A Cargo workspace
   (`winder-core`, `winder-gcode`, `winder-cli`). Coils are TOML design files:
   bobbin, wire, speed/ramps, and an ordered list of winding sections, each

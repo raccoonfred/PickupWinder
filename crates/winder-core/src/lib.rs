@@ -13,6 +13,7 @@
 
 pub mod bobbin;
 pub mod design;
+pub mod lay;
 pub mod physics;
 pub mod recipe;
 pub mod rng;
@@ -21,6 +22,7 @@ pub mod wire;
 
 pub use bobbin::Bobbin;
 pub use design::{Design, DesignError, Direction, Pattern, Section};
+pub use lay::CrossSection;
 pub use physics::{Estimate, EstimateInput, estimate};
 pub use toolpath::{Move, Step, Toolpath, generate};
 pub use wire::WireSpec;
