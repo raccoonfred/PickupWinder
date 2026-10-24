@@ -23,7 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turns or a target resistance. Sections are now an advanced option (a
   layered base or cover), and new designs start as one scatter winding.
 
+- **Parameters panel.** Every setting is in one panel on the left, in
+  cards that fold away, and changes the coil as you edit it. Undo and redo
+  (Ctrl+Z, Ctrl+Y). The Browser, the edit dialogs and the CREATE tools are
+  gone; sections are added from the Winding card.
+- **Scatter by hand.** New `speed_wander` (Hand wander in the editor, 35 %
+  for new scatter sections): the guide hurries and slows within each pass,
+  never closer than one wire per turn. Without it a scatter pass is a
+  steady sweep, as a helix is.
+- Playback at 0.1× and 0.25×.
+
 ### Fixed
+- The spindle turns exactly with the turn count at every playback speed,
+  and is drawn motion-blurred when it turns faster than the screen can
+  show.
+- Turns are drawn round at the bobbin's ends (a sample every 15°), not
+  with corners.
 - The bobbin in 3D turns steadily. Its angle now runs with the turn count
   and the wire's contact point follows from it, so it no longer stalls on
   the long sides and whips round the ends. Fast playback shows a steady

@@ -105,6 +105,10 @@ pub struct Section {
     pub stop_after: Option<String>,
 }
 
+/// Scatter's usual speed wander: the pitch swings about a third either side
+/// of the pass's own, as a hand-guided traverse does.
+pub const SPEED_WANDER: f64 = 0.35;
+
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
@@ -141,6 +145,11 @@ pub enum Pattern {
         /// Each reversal lands up to this far inside the window edge (mm).
         #[serde(default)]
         reversal_jitter_mm: f64,
+        /// How unevenly the guide moves within a pass, as a hand does: the
+        /// pitch swings by up to this share either side of the pass's own
+        /// (0 = a steady sweep, like a helix).
+        #[serde(default, skip_serializing_if = "is_zero")]
+        speed_wander: f64,
         seed: u64,
     },
 }
@@ -293,10 +302,14 @@ impl Design {
                     tpl_min,
                     tpl_max,
                     reversal_jitter_mm,
+                    speed_wander,
                     ..
                 } => {
                     if !(*tpl_min >= 1.0 && tpl_max >= tpl_min && tpl_max.is_finite()) {
                         return bad(format!("section {n}: need 1 <= tpl_min <= tpl_max"));
+                    }
+                    if !(0.0..=0.8).contains(speed_wander) {
+                        return bad(format!("section {n}: speed_wander must be 0 to 0.8"));
                     }
                     if *reversal_jitter_mm < 0.0 {
                         return bad(format!("section {n}: reversal_jitter_mm can't be negative"));
@@ -349,6 +362,7 @@ impl Design {
                         tpl_min: (full * 0.55).round(),
                         tpl_max: (full * 0.85).round(),
                         reversal_jitter_mm: 0.3,
+                        speed_wander: SPEED_WANDER,
                         seed: 1234,
                     },
                     ..Section::layer(turns - 2 * cover)
@@ -579,6 +593,7 @@ pattern = { kind = "scatter", pitch_min_od = 1.2, pitch_max_od = 1.8, inset_max_
             tpl_max,
             reversal_jitter_mm,
             seed,
+            ..
         } = d.sections[1].pattern
         else {
             panic!()

@@ -42,7 +42,7 @@ pattern = { kind = "layer" }
 
 [[sections]]
 turns = 7600
-pattern = { kind = "scatter", tpl_min = 85, tpl_max = 130, reversal_jitter_mm = 0.3, seed = 1234 }
+pattern = { kind = "scatter", tpl_min = 85, tpl_max = 130, reversal_jitter_mm = 0.3, speed_wander = 0.35, seed = 1234 }
 dwell_turns = 0.5          # turns laid in place at each reversal
 
 [[sections]]

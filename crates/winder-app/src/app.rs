@@ -1,11 +1,10 @@
-//! Window layout, file handling and the scrub/play state, laid out like
-//! Fusion: an app bar and a toolbar of CREATE / INSPECT / MAKE groups on
-//! top, the canvas filling the rest with the Browser floating over it on
-//! the left and the ViewCube on the right, and the timeline of sections
-//! along the bottom. Settings open in edit dialogs with OK and Cancel.
+//! Window layout, file handling and the scrub/play state. Every parameter
+//! sits in the panel on the left and changes the coil as you edit it (undo
+//! with Ctrl+Z); what the coil measures sits on the right; the views fill
+//! the middle, with the timeline of the wind along the bottom.
 
 use crate::{
-    chrome::{self, Glyph, Icon, Mark},
+    chrome::{self, Glyph, Icon},
     editor::{self, Kind},
     model::{self, Computed},
     view3d,
@@ -13,7 +12,7 @@ use crate::{
     views::{self, Coloring, View},
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Layout, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
+    self, Align, Color32, FontId, Layout, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
 };
 use std::{
     path::PathBuf,
@@ -23,36 +22,6 @@ use winder_core::{Bobbin, Design, Pattern, auto, recipe};
 use winder_gcode::MachineProfile;
 
 const WARN: Color32 = Color32::from_rgb(200, 90, 50);
-
-/// What an edit dialog is open on.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Edit {
-    Document,
-    Bobbin,
-    Wire,
-    Speed,
-    WirePath,
-    Estimate,
-    Auto,
-    Winding,
-    Section(usize),
-}
-
-impl Edit {
-    fn title(self) -> String {
-        match self {
-            Edit::Document => "DOCUMENT SETTINGS".into(),
-            Edit::Bobbin => "EDIT BOBBIN".into(),
-            Edit::Wire => "EDIT WIRE".into(),
-            Edit::Speed => "EDIT SPEED".into(),
-            Edit::WirePath => "EDIT WIRE PATH".into(),
-            Edit::Estimate => "ESTIMATE INPUTS".into(),
-            Edit::Auto => "TARGETS AND RULES".into(),
-            Edit::Winding => "EDIT WINDING".into(),
-            Edit::Section(i) => format!("EDIT SECTION {}", i + 1),
-        }
-    }
-}
 
 pub struct WinderApp {
     design: Design,
@@ -79,13 +48,17 @@ pub struct WinderApp {
     /// How far round the spindle is in the turn under way, as drawn. At
     /// fast playback it turns at a speed you can still follow.
     spin_phase: f64,
+    /// How far the spindle turned in the last frame (rad).
+    spin_sweep: f64,
     /// Playback speed as a multiple of the real winding speed.
     speedup: f64,
     imported: Vec<recipe::Imported>,
-    /// The open edit dialog, and the design as it was when it opened, for
-    /// Cancel.
-    editing: Option<(Edit, Design)>,
-    /// Section picked in the browser or on the timeline.
+    /// Designs to go back to (Ctrl+Z) and forward to again, and the design
+    /// as of the last step taken.
+    undo: Vec<Design>,
+    redo: Vec<Design>,
+    committed: Design,
+    /// Section picked in the panel or on the timeline.
     selected: Option<usize>,
     /// Section a timeline context menu was opened on.
     menu_section: Option<usize>,
@@ -119,9 +92,12 @@ impl WinderApp {
             follow_end: true,
             playing: false,
             spin_phase: 0.0,
+            spin_sweep: 0.0,
             speedup: 60.0,
             imported: Vec::new(),
-            editing: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            committed: Design::simple("strat").expect("preset exists"),
             selected: None,
             prev: None,
             menu_section: None,
@@ -199,24 +175,42 @@ impl WinderApp {
         self.computed.as_ref().map_or(0.0, |(_, c)| c.stats.turns)
     }
 
-    fn open_edit(&mut self, e: Edit) {
-        // A dialog already open keeps its changes, as switching commands in
-        // Fusion does.
-        self.editing = Some((e, self.design.clone()));
-        if let Edit::Section(i) = e {
-            self.selected = Some(i);
+    /// Add a section of `kind` after the others.
+    fn create(&mut self, kind: Kind) {
+        let s = editor::new_section(&self.design, kind);
+        self.design.sections.push(s);
+        self.selected = Some(self.design.sections.len() - 1);
+        self.follow_end = true;
+    }
+
+    /// Take a step for undo once an edit has settled (a drag let go).
+    fn commit(&mut self, settled: bool) {
+        if settled && self.design != self.committed {
+            let before = std::mem::replace(&mut self.committed, self.design.clone());
+            self.undo.push(before);
+            if self.undo.len() > 200 {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
         }
     }
 
-    fn create(&mut self, kind: Kind) {
-        let before = self.design.clone();
-        let s = editor::new_section(&self.design, kind);
-        self.design.sections.push(s);
-        let i = self.design.sections.len() - 1;
-        self.selected = Some(i);
-        self.follow_end = true;
-        // Cancel takes the new section away again.
-        self.editing = Some((Edit::Section(i), before));
+    fn undo(&mut self) {
+        if let Some(d) = self.undo.pop() {
+            self.redo
+                .push(std::mem::replace(&mut self.design, d.clone()));
+            self.committed = d;
+            self.status = "Undone.".into();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(d) = self.redo.pop() {
+            self.undo
+                .push(std::mem::replace(&mut self.design, d.clone()));
+            self.committed = d;
+            self.status = "Redone.".into();
+        }
     }
 
     fn duplicate(&mut self, i: usize) {
@@ -230,9 +224,6 @@ impl WinderApp {
         if self.design.sections.len() > 1 && i < self.design.sections.len() {
             self.design.sections.remove(i);
             self.selected = None;
-            if matches!(self.editing, Some((Edit::Section(_), _))) {
-                self.editing = None;
-            }
         } else {
             self.status = "A design needs at least one section.".into();
         }
@@ -420,67 +411,27 @@ impl WinderApp {
 
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            // Workspace switcher, as in Fusion; this app has the one.
-            ui.vertical(|ui| {
-                ui.add_space(6.0);
-                let (r, _) = ui.allocate_exact_size(vec2(96.0, 30.0), Sense::hover());
-                ui.painter().rect(
-                    r,
-                    3.0,
-                    Color32::WHITE,
-                    Stroke::new(1.0, Color32::from_gray(190)),
-                    egui::StrokeKind::Inside,
-                );
-                ui.painter().text(
-                    pos2(r.left() + 10.0, r.center().y),
-                    Align2::LEFT_CENTER,
-                    "DESIGN",
-                    FontId::proportional(13.0),
-                    BLUE,
-                );
-                let a = pos2(r.right() - 14.0, r.center().y);
-                ui.painter().add(egui::Shape::convex_polygon(
-                    vec![
-                        a + vec2(-4.0, -2.0),
-                        a + vec2(4.0, -2.0),
-                        a + vec2(0.0, 3.0),
-                    ],
-                    chrome::MUTED,
-                    Stroke::NONE,
-                ));
-            });
-            ui.separator();
-            chrome::group(ui, "CREATE", |ui| {
-                for (icon, label, kind, tip) in [
-                    (
-                        Icon::Layer,
-                        "Layer",
-                        Kind::Layer,
-                        "Perfect layers, one wire per step",
-                    ),
-                    (
-                        Icon::Helix,
-                        "Helix",
-                        Kind::Helix,
-                        "A fixed traverse ratio, like a geared machine",
-                    ),
-                    (
-                        Icon::Scatter,
-                        "Scatter",
-                        Kind::Scatter,
-                        "Every pass different, as by hand",
-                    ),
-                ] {
-                    if chrome::tool_button(ui, icon, label, false)
-                        .on_hover_text(format!("New {} section: {tip}", label.to_lowercase()))
+            chrome::group(ui, "EDIT", |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
+                        .on_hover_text("Ctrl+Z")
                         .clicked()
                     {
-                        self.create(kind);
+                        self.undo();
                     }
-                }
+                    if ui
+                        .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
+                        .on_hover_text("Ctrl+Y or Ctrl+Shift+Z")
+                        .clicked()
+                    {
+                        self.redo();
+                    }
+                });
             });
             ui.separator();
-            chrome::group(ui, "INSPECT", |ui| {
+            chrome::group(ui, "VIEW", |ui| {
                 for (icon, label, view, tip) in [
                     (
                         Icon::Coil3d,
@@ -536,257 +487,161 @@ impl WinderApp {
         });
     }
 
-    // ---------- floating panels ----------
+    // ---------- side panels ----------
 
-    fn browser(&mut self, ctx: &egui::Context, canvas: Rect) {
-        let mut open_edit = None;
-        let mut menu: Option<(usize, u8)> = None;
-        egui::Window::new(RichText::new("BROWSER").size(11.5).color(chrome::MUTED))
-            .default_pos(canvas.left_top() + vec2(10.0, 10.0))
-            .default_width(250.0)
-            .resizable(false)
-            .constrain_to(canvas)
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                let d = &self.design;
-                let root = egui::CollapsingHeader::new(
-                    RichText::new(format!(
-                        "{}{}",
-                        d.name,
-                        if self.dirty() { "  •" } else { "" }
-                    ))
-                    .strong(),
-                )
-                .id_salt("browser-root")
-                .default_open(true);
-                root.show(ui, |ui| {
-                    let rows = [
-                        (
-                            Mark::Settings,
-                            "Document Settings",
-                            String::new(),
-                            Edit::Document,
-                        ),
-                        (
-                            Mark::Folder,
-                            "Bobbin",
-                            format!(
-                                "{:.0} × {:.0} × {:.1} mm",
-                                d.bobbin.core_length_mm,
-                                d.bobbin.core_width_mm,
-                                d.bobbin.channel_height_mm
-                            ),
-                            Edit::Bobbin,
-                        ),
-                        (
-                            Mark::Folder,
-                            "Wire",
-                            d.wire_spec().map(|w| w.name).unwrap_or_default(),
-                            Edit::Wire,
-                        ),
-                        (
-                            Mark::Settings,
-                            "Speed",
-                            format!("{:.0} RPM", d.speed.rpm),
-                            Edit::Speed,
-                        ),
-                        (
-                            Mark::Settings,
-                            "Wire path",
-                            format!("{:.0} mm span", d.lay.free_span_mm),
-                            Edit::WirePath,
-                        ),
-                        (
-                            Mark::Settings,
-                            "Estimate inputs",
-                            String::new(),
-                            Edit::Estimate,
-                        ),
-                        (
-                            Mark::Settings,
-                            "Targets and rules",
-                            match d.auto.target_dcr_kohm {
-                                Some(t) => format!("{t:.2} kΩ target"),
-                                None if d.auto.keep_lay => "keep the lay".into(),
-                                None => "off".into(),
-                            },
-                            Edit::Auto,
-                        ),
-                    ];
-                    for (mark, label, detail, e) in rows {
-                        let on = self.editing.as_ref().is_some_and(|(x, _)| *x == e);
-                        if chrome::browser_row(ui, 0.0, mark, label, &detail, on).clicked() {
-                            open_edit = Some(e);
+    /// Every parameter, grouped, changing the coil as it is edited.
+    fn parameters(&mut self, ui: &mut Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Name").color(chrome::MUTED));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.design.name)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                ui.add_space(4.0);
+                let total = self.design.total_turns();
+                let pattern = match self.design.sections.as_slice() {
+                    [one] => title_case(one.pattern.label()),
+                    many => format!("{} sections", many.len()),
+                };
+                card(
+                    ui,
+                    "Winding",
+                    &format!("{pattern} · {total} turns"),
+                    true,
+                    |ui| {
+                        editor::winding(ui, &mut self.design);
+                        if self.design.sections.len() > 1 {
+                            ui.add_space(4.0);
+                            self.sections_list(ui);
                         }
+                    },
+                );
+                let b = &self.design.bobbin;
+                let size = format!(
+                    "{} · {:.1} × {:.1} mm",
+                    b.style.label(),
+                    b.core_length_mm,
+                    b.core_width_mm
+                );
+                card(ui, "Bobbin", &size, true, |ui| {
+                    editor::bobbin(ui, &mut self.design.bobbin)
+                });
+                let wire = self.design.wire_spec().map(|w| w.name).unwrap_or_default();
+                card(ui, "Wire", &wire, true, |ui| {
+                    editor::wire(ui, &mut self.design)
+                });
+                let rpm = format!("{:.0} RPM", self.design.speed.rpm);
+                card(ui, "Speed", &rpm, false, |ui| {
+                    editor::speed(ui, &mut self.design)
+                });
+                let rules = if self.design.auto.keep_lay {
+                    "keep the lay"
+                } else {
+                    "off"
+                };
+                card(ui, "Rules", rules, false, |ui| {
+                    editor::auto(ui, &mut self.design)
+                });
+                let span = format!("{:.0} mm span", self.design.lay.free_span_mm);
+                card(ui, "Wire path", &span, false, |ui| {
+                    editor::wire_path(ui, &mut self.design)
+                });
+                card(ui, "Estimate inputs", "", false, |ui| {
+                    editor::estimate(ui, &mut self.design)
+                });
+                card(ui, "Notes", "", false, |ui| {
+                    editor::document(ui, &mut self.design)
+                });
+                if let Some(err) = &self.error {
+                    ui.add_space(4.0);
+                    ui.colored_label(WARN, err);
+                }
+                ui.add_space(8.0);
+            });
+    }
+
+    /// The sections of a winding wound in parts, each opening its settings.
+    fn sections_list(&mut self, ui: &mut Ui) {
+        let mut action = None;
+        let fill = self
+            .design
+            .auto
+            .target_dcr_kohm
+            .map(|_| auto::fill_index(&self.design));
+        for i in 0..self.design.sections.len() {
+            let s = &self.design.sections[i];
+            let title = format!("{}  {}", i + 1, title_case(s.pattern.label()));
+            let detail = if fill == Some(i) {
+                format!("{} turns · auto", s.turns)
+            } else {
+                format!("{} turns", s.turns)
+            };
+            let open = self.selected == Some(i);
+            let id = ui.make_persistent_id(("section-card", i));
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                open,
+            );
+            if open {
+                state.set_open(true);
+            }
+            let header = state.show_header(ui, |ui| {
+                ui.label(RichText::new(title).strong());
+                ui.label(RichText::new(detail).color(chrome::MUTED).size(11.5));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("✕").on_hover_text("Delete").clicked() {
+                        action = Some((i, 4));
                     }
-                    let amount = match d.auto.target_dcr_kohm {
-                        Some(t) => format!("{t:.2} kΩ"),
-                        None => format!("{} turns", d.total_turns()),
-                    };
-                    let (icon, what) = match d.sections.as_slice() {
-                        [one] => (
-                            pattern_icon(&one.pattern),
-                            format!("{} · {amount}", title_case(one.pattern.label())),
-                        ),
-                        many => (
-                            pattern_icon(&many[auto::fill_index(d)].pattern),
-                            format!("{} sections · {amount}", many.len()),
-                        ),
-                    };
-                    let on = self
-                        .editing
-                        .as_ref()
-                        .is_some_and(|(x, _)| *x == Edit::Winding);
-                    if chrome::browser_row(ui, 0.0, Mark::Feature(icon), "Winding", &what, on)
-                        .on_hover_text("How the wire is laid and how much to wind")
-                        .clicked()
-                    {
-                        open_edit = Some(Edit::Winding);
+                    if ui.small_button("⧉").on_hover_text("Duplicate").clicked() {
+                        action = Some((i, 1));
                     }
-                    if d.sections.len() < 2 {
-                        return;
+                    if ui.small_button("▼").on_hover_text("Wind later").clicked() {
+                        action = Some((i, 3));
                     }
-                    egui::CollapsingHeader::new(format!("Sections  ({} turns)", d.total_turns()))
-                        .id_salt("browser-sections")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            let fill = d.auto.target_dcr_kohm.map(|_| auto::fill_index(d));
-                            for (i, s) in d.sections.iter().enumerate() {
-                                let icon = pattern_icon(&s.pattern);
-                                let label = format!("{}  {}", i + 1, title_case(s.pattern.label()));
-                                let resp = chrome::browser_row(
-                                    ui,
-                                    0.0,
-                                    Mark::Feature(icon),
-                                    &label,
-                                    &if fill == Some(i) {
-                                        format!("{} turns · auto", s.turns)
-                                    } else {
-                                        format!("{} turns", s.turns)
-                                    },
-                                    self.selected == Some(i),
-                                )
-                                .on_hover_text(section_summary(i, s));
-                                if resp.clicked() {
-                                    open_edit = Some(Edit::Section(i));
-                                }
-                                resp.context_menu(|ui| {
-                                    if let Some(a) = section_menu(ui) {
-                                        menu = Some((i, a));
-                                    }
-                                });
-                            }
-                        });
+                    if ui.small_button("▲").on_hover_text("Wind earlier").clicked() {
+                        action = Some((i, 2));
+                    }
                 });
             });
-        if let Some(e) = open_edit {
-            self.open_edit(e);
+            header.body(|ui| {
+                editor::section_form(ui, &mut self.design, i);
+            });
+            if open {
+                self.selected = None;
+            }
         }
-        if let Some((i, a)) = menu {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Add").color(chrome::MUTED));
+            for (label, kind) in [
+                ("Layer", Kind::Layer),
+                ("Helix", Kind::Helix),
+                ("Scatter", Kind::Scatter),
+            ] {
+                if ui.small_button(label).clicked() {
+                    self.create(kind);
+                }
+            }
+        });
+        ui.add_space(4.0);
+        if let Some((i, a)) = action {
             self.section_action(i, a);
         }
     }
 
     fn section_action(&mut self, i: usize, a: u8) {
         match a {
-            0 => self.open_edit(Edit::Section(i)),
+            0 => self.selected = Some(i),
             1 => self.duplicate(i),
             2 => self.move_section(i, false),
             3 => self.move_section(i, true),
             _ => self.delete(i),
         }
-    }
-
-    fn edit_dialog(&mut self, ctx: &egui::Context, canvas: Rect) {
-        let Some((e, _)) = self.editing.as_ref() else {
-            return;
-        };
-        let e = *e;
-        if let Edit::Section(i) = e
-            && i >= self.design.sections.len()
-        {
-            self.editing = None;
-            return;
-        }
-        let mut close = None;
-        let mut delete = false;
-        let mut open = true;
-        egui::Window::new(RichText::new(e.title()).size(12.0).strong())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_pos(canvas.left_top() + vec2(280.0, 10.0))
-            .default_width(330.0)
-            .constrain_to(canvas)
-            .show(ctx, |ui| {
-                let d = &mut self.design;
-                match e {
-                    Edit::Document => editor::document(ui, d),
-                    Edit::Bobbin => editor::bobbin(ui, &mut d.bobbin),
-                    Edit::Wire => editor::wire(ui, d),
-                    Edit::Speed => editor::speed(ui, d),
-                    Edit::WirePath => editor::wire_path(ui, d),
-                    Edit::Estimate => editor::estimate(ui, d),
-                    Edit::Auto => editor::auto(ui, d),
-                    Edit::Winding => editor::winding(ui, d),
-                    Edit::Section(i) => editor::section_form(ui, d, i),
-                }
-                if let Some(err) = &self.error {
-                    ui.add_space(4.0);
-                    ui.colored_label(WARN, err);
-                }
-                ui.add_space(6.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if matches!(e, Edit::Section(_))
-                        && ui
-                            .add_enabled(d.sections.len() > 1, egui::Button::new("Delete"))
-                            .clicked()
-                    {
-                        delete = true;
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("Cancel").clicked() {
-                            close = Some(false);
-                        }
-                        let ok = egui::Button::new(RichText::new("   OK   ").color(Color32::WHITE))
-                            .fill(BLUE);
-                        if ui.add(ok).clicked() {
-                            close = Some(true);
-                        }
-                    });
-                });
-            });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            close = Some(false);
-        }
-        if !open {
-            close = Some(false);
-        }
-        if delete {
-            if let Edit::Section(i) = e {
-                self.delete(i);
-            }
-            return;
-        }
-        match close {
-            Some(true) => self.editing = None,
-            Some(false) => {
-                if let Some((_, before)) = self.editing.take() {
-                    self.design = before;
-                }
-            }
-            None => {}
-        }
-    }
-
-    fn properties(&mut self, ctx: &egui::Context, canvas: Rect) {
-        egui::Window::new(RichText::new("PROPERTIES").size(11.5).color(chrome::MUTED))
-            .default_pos(pos2(canvas.right() - 270.0, canvas.top() + 220.0))
-            .default_width(250.0)
-            .resizable(false)
-            .constrain_to(canvas)
-            .show(ctx, |ui| self.results(ui));
     }
 
     fn results(&mut self, ui: &mut Ui) {
@@ -868,19 +723,18 @@ impl WinderApp {
                 c,
                 self.scrub,
                 self.spin_phase as f32,
+                self.spin_sweep as f32,
                 &mut self.camera,
                 self.renderer.as_ref(),
             );
             return;
         }
-        // The flat views get a white sheet with their options along the top,
-        // clear of the Browser.
+        // The flat views get a white sheet with their options along the top.
         let rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
         let inner = rect.shrink2(vec2(16.0, 8.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
             ui.horizontal(|ui| {
-                ui.add_space(270.0);
                 ui.label(RichText::new(views_title(self.view)).strong());
                 if matches!(self.view, View::CrossSection | View::Build) {
                     ui.separator();
@@ -898,10 +752,7 @@ impl WinderApp {
                 }
             });
             ui.add_space(4.0);
-            let mut body = ui.available_rect_before_wrap();
-            // Leave the Browser's and the Properties' columns free.
-            body.min.x += 260.0;
-            body.max.x -= 270.0;
+            let body = ui.available_rect_before_wrap();
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 match self.view {
                     View::CrossSection => {
@@ -984,12 +835,18 @@ impl WinderApp {
                 .selected_text(format!("{}×", self.speedup))
                 .width(62.0)
                 .show_ui(ui, |ui| {
-                    for s in [1.0, 10.0, 60.0, 300.0, 1000.0] {
+                    for s in [0.1, 0.25, 1.0, 10.0, 60.0, 300.0, 1000.0] {
                         ui.selectable_value(&mut self.speedup, s, format!("{s}×"));
                     }
                 })
                 .response
-                .on_hover_text("Playback speed, against the real winding speed");
+                .on_hover_text(format!(
+                    "Playback speed against the real wind: the spindle turns at \
+                     {:.0} RPM on screen ({:.1} turns a second). Above about 20 \
+                     turns a second it is drawn blurred, as a camera would see it.",
+                    self.design.speed.rpm * self.speedup,
+                    self.design.speed.rpm / 60.0 * self.speedup
+                ));
             ui.add_space(8.0);
             let readout = 150.0;
             let w = (ui.available_width() - readout).max(120.0);
@@ -1097,7 +954,7 @@ impl WinderApp {
         if resp.double_clicked()
             && let Some(i) = pointer.and_then(|p| under(p.x))
         {
-            self.open_edit(Edit::Section(i));
+            self.selected = Some(i);
         }
         if resp.secondary_clicked() {
             self.menu_section = pointer.and_then(|p| under(p.x));
@@ -1135,19 +992,18 @@ impl WinderApp {
             } else {
                 self.scrub.fract()
             };
+            self.spin_sweep = 0.0;
             return;
         }
         let rpm = self.design.speed.rpm;
         let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
         let turns_per_s = rpm / 60.0 * self.speedup;
-        self.scrub = (self.scrub + turns_per_s * dt).min(total);
-        // Faster than about three turns a second the eye can't follow the
-        // spindle (it strobes), so it is drawn turning at that.
-        if turns_per_s <= 3.0 {
-            self.spin_phase = self.scrub.fract();
-        } else {
-            self.spin_phase = (self.spin_phase + 3.0 * dt).fract();
-        }
+        let step = (turns_per_s * dt).min(total - self.scrub).max(0.0);
+        self.scrub += step;
+        // The spindle is always where the turn count has it. Faster than
+        // the screen can show, the 3D view blurs it over the angle it swept.
+        self.spin_phase = self.scrub.fract();
+        self.spin_sweep = step * std::f64::consts::TAU;
         if self.scrub >= total {
             self.playing = false;
             self.follow_end = true;
@@ -1202,7 +1058,7 @@ fn section_summary(i: usize, s: &winder_core::Section) -> String {
         }
     };
     format!(
-        "{}. {} · {} turns · {how}\nDouble-click on the timeline or click in the Browser to edit; right-click for more",
+        "{}. {} · {} turns · {how}\nClick to open it in the panel; right-click for more",
         i + 1,
         title_case(s.pattern.label()),
         s.turns
@@ -1229,6 +1085,18 @@ impl eframe::App for WinderApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save(false);
+        }
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        if !typing {
+            let shift_cmd = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+            if ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+                    || i.consume_key(shift_cmd, egui::Key::Z)
+            }) {
+                self.redo();
+            } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+                self.undo();
+            }
         }
         let title = format!(
             "Pickup Winder · {}{}",
@@ -1266,26 +1134,34 @@ impl eframe::App for WinderApp {
                     .stroke(Stroke::new(1.0, Color32::from_gray(214))),
             )
             .show(ui, |ui| self.timeline(ui));
+        egui::Panel::left("parameters")
+            .frame(bar(chrome::PANEL, (10, 4)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
+            .resizable(true)
+            .default_size(340.0)
+            .min_size(280.0)
+            .show(ui, |ui| self.parameters(ui));
+        egui::Panel::right("results")
+            .frame(bar(chrome::PANEL, (10, 8)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
+            .resizable(false)
+            .exact_size(250.0)
+            .show(ui, |ui| {
+                ui.label(RichText::new("THE COIL").size(11.5).color(chrome::MUTED));
+                ui.add_space(4.0);
+                self.results(ui);
+            });
         self.follow();
         let settled = !ui.input(|i| i.pointer.any_down());
         self.recompute(settled);
+        self.commit(settled);
         if !settled {
             ui.ctx().request_repaint();
         }
         self.advance_playback(ui);
-        let canvas = egui::CentralPanel::default()
+        egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                let r = ui.max_rect();
-                self.canvas(ui);
-                r
-            })
-            .inner;
+            .show(ui, |ui| self.canvas(ui));
 
         let ctx = ui.ctx().clone();
-        self.browser(&ctx, canvas);
-        self.properties(&ctx, canvas);
-        self.edit_dialog(&ctx, canvas);
 
         if !self.imported.is_empty() {
             let mut pick = None;
@@ -1339,4 +1215,30 @@ fn file_stem(name: &str) -> String {
         .collect::<Vec<_>>()
         .join("-");
     if s.is_empty() { "coil".into() } else { s }
+}
+
+/// A titled group of parameters that folds away, with a summary beside the
+/// title so it says what it holds while folded.
+fn card(ui: &mut Ui, title: &str, summary: &str, open: bool, add: impl FnOnce(&mut Ui)) {
+    egui::Frame::NONE
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, Color32::from_gray(222)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let id = ui.make_persistent_id(("card", title));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open)
+                .show_header(ui, |ui| {
+                    ui.label(RichText::new(title).strong().size(13.5));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(summary).color(chrome::MUTED).size(11.5));
+                    });
+                })
+                .body(|ui| {
+                    ui.add_space(2.0);
+                    add(ui);
+                });
+        });
+    ui.add_space(6.0);
 }

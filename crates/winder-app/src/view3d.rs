@@ -13,6 +13,7 @@ use eframe::{
     egui_glow,
     glow::{self, HasContext},
 };
+use std::f32::consts::TAU;
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     sync::{Arc, Mutex},
@@ -185,7 +186,9 @@ fn wrap_angle(a: f32) -> f32 {
 }
 
 /// Points per turn along the wire.
-const SAMPLES: usize = 40;
+/// Longest step along the core between wire samples, as a share of the way
+/// round: one lay station. The rounded ends get a sample every 15° on top.
+const MAX_STEP: f32 = 1.0 / 16.0;
 
 /// The core outline: a rounded rectangle, walked from where the wire runs
 /// onto the first short end, as the lay model's stations are.
@@ -231,6 +234,29 @@ impl Core {
         }
     }
 
+    /// Where to sample a turn, as shares of the way round: every 15° round
+    /// each corner, so a turn is round there however deep it lies, and
+    /// evenly along the straight sides.
+    fn samples(&self) -> Vec<f32> {
+        let mut keys: Vec<f32> = self
+            .u
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, &u)| u)
+            .collect();
+        keys.push(1.0);
+        keys.dedup_by(|b, a| (*b - *a).abs() < 1e-6);
+        let mut out = Vec::new();
+        for w in keys.windows(2) {
+            let k = ((w[1] - w[0]) / MAX_STEP).ceil().max(1.0) as usize;
+            for j in 0..k {
+                out.push(w[0] + (w[1] - w[0]) * j as f32 / k as f32);
+            }
+        }
+        out
+    }
+
     /// Point `h` mm out from the core at share `u` of the way round, and the
     /// outward normal there, as world (x, z).
     fn at(&self, u: f32, h: f32) -> ([f32; 2], [f32; 2]) {
@@ -257,6 +283,8 @@ pub struct Geometry {
     /// Solids, pos(3) normal(3) rgba(4), split by how they move.
     parts: machine::Parts,
     turns: usize,
+    /// Where each turn is sampled (shares of the way round).
+    us: Vec<f32>,
     od: f32,
     channel: f32,
     span_mm: f32,
@@ -309,10 +337,10 @@ impl Geometry {
         let cross = &c.cross;
         let turns = cross.turn_count();
 
-        let mut pts: Vec<([f32; 3], [f32; 3], f32)> = Vec::with_capacity(turns * SAMPLES + 1);
+        let us = core.samples();
+        let mut pts: Vec<([f32; 3], [f32; 3], f32)> = Vec::with_capacity(turns * us.len() + 1);
         for n in 0..turns {
-            for s in 0..SAMPLES {
-                let u = s as f32 / SAMPLES as f32;
+            for &u in &us {
                 let (y, z) = lay_at(cross, n, u);
                 let (p, nn) = core.at(u, z);
                 pts.push(([p[0], y, p[1]], [nn[0], 0.0, nn[1]], n as f32 + u));
@@ -334,6 +362,7 @@ impl Geometry {
         Geometry {
             wire,
             turns,
+            us,
             od: c.cross.od_mm as f32,
             channel: h,
             // Fit the bobbin and the guide beside it.
@@ -494,6 +523,7 @@ pub struct Renderer {
     pending: Option<Geometry>,
     od: f32,
     turns: usize,
+    us: Vec<f32>,
     channel: f32,
     span_mm: f32,
     guide_r: f32,
@@ -546,6 +576,7 @@ precision mediump float;
 uniform vec3 u_light;
 uniform float u_total;
 uniform float u_upto;
+uniform float u_alpha;
 in vec3 v_side_dir;
 in vec3 v_nrm;
 in vec3 v_to_eye;
@@ -569,7 +600,7 @@ void main() {
     float fresh = clamp(1.0 - (u_upto - v_turn) / 3.0, 0.0, 1.0);
     base = mix(base, vec3(1.0, 0.85, 0.55), fresh);
     vec3 col = base * (0.25 + 0.85 * diff) + vec3(1.0, 0.9, 0.75) * spec * 0.55;
-    out_color = vec4(col, 1.0);
+    out_color = vec4(col, u_alpha);
 }
 "#;
 
@@ -597,6 +628,7 @@ uniform vec3 u_light;
 uniform vec3 u_to_eye;
 uniform vec3 u_eye;
 uniform float u_persp;
+uniform float u_alpha;
 in vec3 v_nrm;
 in vec3 v_pos;
 in vec4 v_col;
@@ -610,7 +642,7 @@ void main() {
     float spec = pow(max(dot(n, normalize(u_light + e)), 0.0), 30.0);
     float shine = smoothstep(0.35, 0.8, dot(v_col.rgb, vec3(0.333)));
     vec3 col = v_col.rgb * (0.38 + 0.62 * d) + vec3(spec * (0.08 + 0.4 * shine));
-    out_color = vec4(col, v_col.a);
+    out_color = vec4(col, v_col.a * u_alpha);
 }
 "#;
 
@@ -712,6 +744,7 @@ impl Renderer {
                 pending: None,
                 od: 0.07,
                 turns: 0,
+                us: vec![0.0],
                 channel: 10.0,
                 span_mm: 60.0,
                 guide_r: 50.0,
@@ -724,6 +757,7 @@ impl Renderer {
     pub fn set(&mut self, g: Geometry) {
         self.od = g.od;
         self.turns = g.turns;
+        self.us = g.us.clone();
         self.channel = g.channel;
         self.span_mm = g.span_mm;
         self.guide_r = g.parts.guide_r;
@@ -773,7 +807,7 @@ impl Renderer {
             gl.clear(glow::DEPTH_BUFFER_BIT);
             gl.disable(glow::BLEND);
 
-            let set = |prog: glow::Program, m: [f32; 16]| {
+            let set = |prog: glow::Program, m: [f32; 16], alpha: f32| {
                 gl.use_program(Some(prog));
                 let u = |n: &str| gl.get_uniform_location(prog, n);
                 gl.uniform_matrix_4_f32_slice(u("u_mvp").as_ref(), false, &f.mvp);
@@ -787,38 +821,62 @@ impl Renderer {
                 gl.uniform_1_f32(u("u_radius").as_ref(), f.radius);
                 gl.uniform_1_f32(u("u_total").as_ref(), self.turns as f32);
                 gl.uniform_1_f32(u("u_upto").as_ref(), f.upto);
+                gl.uniform_1_f32(u("u_alpha").as_ref(), alpha);
             };
             let draw = |b: &Buf, mode: u32, n: usize| {
                 gl.bind_vertex_array(Some(b.vao));
                 gl.draw_arrays(mode, 0, n as i32);
             };
-            let spin = model(f.theta, 0.0);
             let still = model(0.0, 0.0);
+            let points = {
+                let up = f.upto.max(0.0);
+                let n = up.floor();
+                let part = self.us.partition_point(|&u| u <= up - n);
+                (n as usize * self.us.len() + part + 1).min(self.wire.count)
+            };
 
-            set(self.solid_prog, spin);
-            draw(&self.spin, glow::TRIANGLES, self.spin.count);
+            // Parts that don't turn, solid.
             if f.machine {
-                set(self.solid_prog, still);
+                set(self.solid_prog, still, 1.0);
                 draw(&self.still, glow::TRIANGLES, self.still.count);
-                set(self.solid_prog, model(0.0, f.guide_y));
+                set(self.solid_prog, model(0.0, f.guide_y), 1.0);
                 draw(&self.carriage, glow::TRIANGLES, self.carriage.count);
+                if self.free.count >= 2 {
+                    set(self.wire_prog, still, 1.0);
+                    draw(&self.free, glow::TRIANGLE_STRIP, self.free.count * 2);
+                }
             }
 
-            // The wire up to the scrub point, as one strip.
-            let points = ((f.upto.max(0.0) * SAMPLES as f32) as usize + 1).min(self.wire.count);
-            if points >= 2 {
-                set(self.wire_prog, spin);
-                draw(&self.wire, glow::TRIANGLE_STRIP, points * 2);
+            // The spindle and everything on it. When it turns further in one
+            // frame than the eye can follow, it is drawn as a camera would
+            // see it: smeared over the angle it swept during the frame.
+            let ghosts = if f.sweep > BLUR_FROM { BLUR_GHOSTS } else { 1 };
+            let alpha = if ghosts > 1 {
+                1.0 - 0.1f32.powf(1.0 / ghosts as f32)
+            } else {
+                1.0
+            };
+            if ghosts > 1 {
+                gl.enable(glow::BLEND);
+                gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                gl.depth_mask(false);
             }
-            if f.machine && self.free.count >= 2 {
-                set(self.wire_prog, still);
-                draw(&self.free, glow::TRIANGLE_STRIP, self.free.count * 2);
+            for k in 0..ghosts {
+                let back = f.sweep.min(TAU) * k as f32 / ghosts as f32;
+                let spin = model(f.theta - f.dir * back, 0.0);
+                set(self.solid_prog, spin, alpha);
+                draw(&self.spin, glow::TRIANGLES, self.spin.count);
+                if points >= 2 {
+                    set(self.wire_prog, spin, alpha);
+                    draw(&self.wire, glow::TRIANGLE_STRIP, points * 2);
+                }
+                if f.top_flange {
+                    set(self.solid_prog, spin, alpha);
+                    draw(&self.top, glow::TRIANGLES, self.top.count);
+                }
             }
-
-            if f.top_flange {
-                set(self.solid_prog, spin);
-                draw(&self.top, glow::TRIANGLES, self.top.count);
-            }
+            gl.depth_mask(true);
+            gl.disable(glow::BLEND);
             gl.bind_vertex_array(None);
             gl.disable(glow::DEPTH_TEST);
         }
@@ -826,6 +884,11 @@ impl Renderer {
 }
 
 /// What one paint needs, copied into the callback.
+/// Turning more than this in one frame (rad) strobes, so the spindle is
+/// drawn blurred, from this many copies.
+const BLUR_FROM: f32 = 2.0;
+const BLUR_GHOSTS: usize = 14;
+
 struct Frame {
     mvp: [f32; 16],
     to_eye: [f32; 3],
@@ -836,8 +899,12 @@ struct Frame {
     upto: f32,
     top_flange: bool,
     machine: bool,
-    /// Spindle angle (rad) and the guide's height (mm).
+    /// Spindle angle (rad), how far it turned since the last frame (rad),
+    /// and the guide's height (mm).
     theta: f32,
+    sweep: f32,
+    /// Which way theta grows as the wind goes on (±1).
+    dir: f32,
     guide_y: f32,
     /// Free wire vertices, in the world.
     free: Vec<f32>,
@@ -852,12 +919,14 @@ fn norm(v: [f32; 3]) -> [f32; 3] {
 /// pointer, the middle button pans, Shift + middle orbits, and a left-drag
 /// does whatever the navigation bar has picked (orbit unless told
 /// otherwise). The ViewCube sits top right.
+#[allow(clippy::too_many_arguments)]
 pub fn coil_3d(
     ui: &mut Ui,
     d: &Design,
     c: &Computed,
     upto: f64,
     phase: f32,
+    sweep: f32,
     cam: &mut Camera,
     renderer: Option<&Arc<Mutex<Renderer>>>,
 ) {
@@ -966,6 +1035,8 @@ pub fn coil_3d(
         top_flange: cam.top_flange,
         machine: cam.machine,
         theta: feed.theta,
+        sweep,
+        dir: feed.dir,
         guide_y: feed.eyelet[1],
         free,
     };
@@ -1011,6 +1082,8 @@ pub fn coil_3d(
 /// tangent point, as seen from the eyelet.
 struct Feed {
     theta: f32,
+    /// Which way theta grows as the wind goes on (±1).
+    dir: f32,
     eyelet: [f32; 3],
     /// Where the wire meets the coil, in the world.
     contact: [f32; 3],
@@ -1055,6 +1128,7 @@ impl Feed {
         if total == 0 {
             return Feed {
                 theta: 0.0,
+                dir: 1.0,
                 eyelet,
                 contact: eyelet,
                 drawn: 0.0,
@@ -1099,6 +1173,7 @@ impl Feed {
         let eyelet = [eyelet[0], guide_at(c, drawn) as f32, eyelet[2]];
         Feed {
             theta,
+            dir: if a1 >= a0 { -1.0 } else { 1.0 },
             eyelet,
             contact: spun([p[0], y, p[1]], theta),
             drawn,
@@ -1224,12 +1299,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn turns_are_round_at_the_ends() {
+        // A Strat core: the round ends are a small share of the way round,
+        // but still get a sample every 15°.
+        let core = Core::new(4.9, 56.9, 2.45);
+        let us = core.samples();
+        assert!(us.windows(2).all(|w| w[1] > w[0]));
+        let on_end = |u: &&f32| {
+            let (p, _) = core.at(**u, 0.0);
+            p[0].abs() > 56.9 / 2.0 - 2.45 + 1e-3
+        };
+        let n = us.iter().filter(on_end).count();
+        assert!(n >= 2 * 11, "{n} samples on the ends of {}", us.len());
+        assert!(us.len() <= 64, "{}", us.len());
+    }
+
+    #[test]
     fn wire_is_one_strip_through_every_turn() {
         let d = Design::example("paf").unwrap();
         let c = Computed::new(&d).unwrap();
         let g = Geometry::build(&d, &c);
         let points = g.wire.len() / WIRE_STRIDE / 2;
-        assert_eq!(points, 5000 * SAMPLES + 1);
+        assert_eq!(points, 5000 * g.us.len() + 1);
         assert!(g.wire.iter().all(|v| v.is_finite()));
         assert_eq!(g.parts.spin.0.len() % (SOLID_STRIDE * 3), 0);
         // Every wire point sits between the flanges and outside the core.

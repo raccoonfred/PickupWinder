@@ -77,6 +77,7 @@ fn import_one(name: &str, r: &Value) -> Result<Imported, DesignError> {
             tpl_min: (tpl * (1.0 - jitter / 100.0)).max(1.0),
             tpl_max: tpl * (1.0 + jitter / 100.0),
             reversal_jitter_mm: 0.0,
+            speed_wander: 0.0,
             seed,
         }
     } else {

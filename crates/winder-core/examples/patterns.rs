@@ -49,6 +49,7 @@ fn main() {
             tpl_min: (full * 0.4).round(),
             tpl_max: (full * 0.9).round(),
             reversal_jitter_mm: 0.4,
+            speed_wander: winder_core::design::SPEED_WANDER,
             seed: 5,
         };
         row("scatter 40-90 %", &with(Section::with(n, scatter)));

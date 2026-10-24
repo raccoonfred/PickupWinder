@@ -81,16 +81,16 @@ cargo run --release -p winder-app                               # a new Strat de
 cargo run --release -p winder-app -- designs/strat-vintage.toml # or open a file
 ```
 
-The editor is laid out like Fusion 360. The toolbar has three groups:
-**CREATE** adds a layer, helix or scatter section, **INSPECT** picks the
-view, and **MAKE** exports G-code or loads a machine profile. The
-**Browser** floats over the canvas on the left. Click a node (bobbin, wire,
-speed, wire path, estimate inputs or the winding) to open its edit dialog.
-Changes show live, OK keeps them and Cancel or Esc puts them back. The
-**timeline** along the bottom shows the sections as features, sized by
-their turns. Drag it to scrub the wind and play it back at 1× to 1000×
-speed. Double-click a section to edit it, or right-click it to duplicate,
-move or delete it. **Properties** floats on the right.
+Every parameter sits in the panel on the left, grouped into cards
+(Winding, Bobbin, Wire, Speed, Rules, Wire path, Estimate inputs, Notes).
+Edits change the coil straight away, and Ctrl+Z / Ctrl+Y (or the Undo and
+Redo buttons) step back and forward. What the coil measures is on the right.
+The toolbar picks the view (3D, Section, Lay, Build) and makes the G-code
+or loads a machine profile. The **timeline** along the bottom shows the
+wind; drag it to scrub, and play it back at 0.1× to 1000× the real speed.
+The spindle turns exactly with the turn count; when it turns faster than
+a screen can show (above about 20 turns a second), it is drawn blurred, as
+a camera would see it.
 
 **Winding** is one choice: how the guide lays the wire (perfect layers, a
 helix or scatter) and how much to wind, as a number of turns or as a
@@ -160,8 +160,10 @@ fill_section = 2   # optional; default is the biggest section
 
 Sections are set the way real winders are, by **turns per pass**: `layer`
 (perfect layers, the guide steps one wire per turn), `helix` (a fixed
-traverse ratio, like a geared or cam machine) and `scatter` (a new turns per
-pass and reversal point for every pass). See
+traverse ratio, like a geared or cam machine: every pass a steady sweep)
+and `scatter` (as by hand: a new turns per pass and reversal point for
+every pass, and with `speed_wander` the guide hurries and slows within the
+pass, so turns spread out in places and bunch up in others). See
 [docs/WINDING_MODEL.md](docs/WINDING_MODEL.md) for how the lay is worked
 out and what it was checked against.
 

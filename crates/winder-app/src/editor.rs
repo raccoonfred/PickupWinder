@@ -518,27 +518,9 @@ pub fn winding(ui: &mut Ui, d: &mut Design) {
             });
     } else {
         ui.label(format!(
-            "Wound in {} sections, one after another:",
+            "Wound in {} sections, one after another.",
             d.sections.len()
         ));
-        let fill = d
-            .auto
-            .target_dcr_kohm
-            .map(|_| winder_core::auto::fill_index(d));
-        for (i, s) in d.sections.iter().enumerate() {
-            ui.weak(format!(
-                "  {}. {} · {} turns{}",
-                i + 1,
-                s.pattern.label(),
-                s.turns,
-                if fill == Some(i) {
-                    " (takes up the DCR)"
-                } else {
-                    ""
-                }
-            ));
-        }
-        ui.label("Edit each one under Sections in the Browser.");
         ui.add_space(4.0);
         if ui
             .button("Make it one winding")
@@ -574,6 +556,7 @@ fn scatter_default(seed: u64, side_by_side: f64) -> Pattern {
         tpl_min: (side_by_side * 0.55).round(),
         tpl_max: (side_by_side * 0.85).round(),
         reversal_jitter_mm: 0.3,
+        speed_wander: winder_core::design::SPEED_WANDER,
         seed: 1000 + seed,
     }
 }
@@ -680,6 +663,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                 tpl_min,
                 tpl_max,
                 reversal_jitter_mm,
+                speed_wander,
                 seed,
             } => {
                 tpl_row(ui, "Turns per pass from", tpl_min, 1.0, window, od);
@@ -697,6 +681,31 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                         .suffix(" mm"),
                 )
                 .on_hover_text("Each reversal lands up to this far inside the window edge");
+                ui.label("Hand wander");
+                ui.horizontal(|ui| {
+                    let mut pct = *speed_wander * 100.0;
+                    if ui
+                        .add(
+                            DragValue::new(&mut pct)
+                                .range(0.0..=80.0)
+                                .speed(0.5)
+                                .max_decimals(0)
+                                .suffix(" %"),
+                        )
+                        .on_hover_text(
+                            "How unevenly the guide moves within a pass, as a hand does: \
+                             turns bunch up in places and spread out in others. \
+                             At 0 % each pass is a steady sweep, like a helix.",
+                        )
+                        .changed()
+                    {
+                        *speed_wander = pct / 100.0;
+                    }
+                    if *speed_wander == 0.0 {
+                        ui.weak("steady, like a helix");
+                    }
+                });
+                ui.end_row();
                 ui.label("Seed");
                 ui.horizontal(|ui| {
                     ui.add(DragValue::new(seed));

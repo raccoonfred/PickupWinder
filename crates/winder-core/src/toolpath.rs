@@ -103,6 +103,30 @@ struct Pass {
     lo: f64,
     hi: f64,
     pitch_mm: f64,
+    /// Scatter's uneven hand: (share, cycles across the pass, phase) for two
+    /// slow swings of the pitch.
+    wander: [(f64, f64, f64); 2],
+    /// Wander never slows the guide below one wire per turn, where turns
+    /// would ride up on each other instead of bunching.
+    min_pitch_mm: f64,
+}
+
+impl Pass {
+    /// Pitch with the guide at `y`. Wander slows and hurries the guide
+    /// along the pass, so turns bunch up in some places and spread out in
+    /// others, as by hand; a steady pass has the same pitch everywhere.
+    fn pitch_at(&self, y: f64) -> f64 {
+        let x = ((y - self.lo) / (self.hi - self.lo).max(EPS)).clamp(0.0, 1.0);
+        let swing: f64 = self
+            .wander
+            .iter()
+            .map(|&(a, k, ph)| a * (std::f64::consts::TAU * k * x + ph).sin())
+            .sum();
+        if swing == 0.0 {
+            return self.pitch_mm;
+        }
+        (self.pitch_mm * (1.0 + swing)).max(self.min_pitch_mm.min(self.pitch_mm))
+    }
 }
 
 /// Window edges for a section, as guide positions (wire centres).
@@ -124,18 +148,39 @@ struct Passes<'a> {
 impl Passes<'_> {
     fn next(&mut self) -> Pass {
         let (lo, hi) = window(self.section, self.od, self.channel);
+        let mut wander = [(0.0, 0.0, 0.0); 2];
         let (lo, hi, tpl) = match self.section.pattern {
             Pattern::Helix { tpl } => (lo, hi, tpl),
             Pattern::Scatter {
                 tpl_min,
                 tpl_max,
                 reversal_jitter_mm,
+                speed_wander,
                 ..
-            } => (
-                lo + self.rng.range(0.0, reversal_jitter_mm),
-                hi - self.rng.range(0.0, reversal_jitter_mm),
-                self.rng.range(tpl_min, tpl_max),
-            ),
+            } => {
+                let pass = (
+                    lo + self.rng.range(0.0, reversal_jitter_mm),
+                    hi - self.rng.range(0.0, reversal_jitter_mm),
+                    self.rng.range(tpl_min, tpl_max),
+                );
+                if speed_wander > 0.0 {
+                    // One slow swing and one quicker, each pass its own.
+                    let tau = std::f64::consts::TAU;
+                    wander = [
+                        (
+                            speed_wander * 0.65,
+                            self.rng.range(0.5, 1.5),
+                            self.rng.range(0.0, tau),
+                        ),
+                        (
+                            speed_wander * 0.35,
+                            self.rng.range(2.0, 4.0),
+                            self.rng.range(0.0, tau),
+                        ),
+                    ];
+                }
+                pass
+            }
             Pattern::Layer { .. } => unreachable!("layer sections step, they don't sweep"),
         };
         Pass {
@@ -143,6 +188,8 @@ impl Passes<'_> {
             hi,
             // Turns per pass over this pass's own window, edge to edge.
             pitch_mm: (hi - lo) / tpl,
+            wander,
+            min_pitch_mm: self.od,
         }
     }
 }
@@ -319,13 +366,14 @@ fn steady(
             } else {
                 let edge = if cur.dir > 0.0 { pass.hi } else { pass.lo };
                 let room = (edge - cur.y) * cur.dir;
-                let need = pass.pitch_mm * f;
+                let pitch = pass.pitch_at(cur.y);
+                let need = pitch * f;
                 if need <= room + EPS {
                     cur.y += cur.dir * need;
                     t += f;
                     f = 0.0;
                 } else {
-                    let used = (room.max(0.0) / pass.pitch_mm).min(f);
+                    let used = (room.max(0.0) / pitch).min(f);
                     if used > EPS {
                         cur.y = edge;
                         t += used;
@@ -437,6 +485,53 @@ mod tests {
             assert!(st.max_y_mm <= 6.5 - 0.071 / 2.0 + 1e-9, "seed {seed}");
             assert_eq!(st.turns, 5000.0);
         }
+    }
+
+    /// Spread of the guide's speed within passes, as a share of its mean.
+    fn speed_spread(d: &Design) -> f64 {
+        let tp = generate(d).unwrap();
+        let moves: Vec<_> = tp.moves().collect();
+        let mut spread = Vec::new();
+        let mut speeds: Vec<f64> = Vec::new();
+        for w in moves.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if a.pass != b.pass {
+                if speeds.len() > 20 {
+                    let mean = speeds.iter().sum::<f64>() / speeds.len() as f64;
+                    let var = speeds.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+                        / speeds.len() as f64;
+                    spread.push(var.sqrt() / mean);
+                }
+                speeds.clear();
+                continue;
+            }
+            let dt = b.turns - a.turns;
+            if dt > 0.5 {
+                speeds.push((b.y_mm - a.y_mm).abs() / dt);
+            }
+        }
+        spread.iter().sum::<f64>() / spread.len().max(1) as f64
+    }
+
+    #[test]
+    fn scatter_wanders_within_a_pass_and_helix_does_not() {
+        let helix = strat_helix(3000, 100.0);
+        assert!(speed_spread(&helix) < 0.01, "{}", speed_spread(&helix));
+        let mut scatter = helix.clone();
+        scatter.sections[0].pattern = Pattern::Scatter {
+            tpl_min: 100.0,
+            tpl_max: 100.0,
+            reversal_jitter_mm: 0.0,
+            speed_wander: crate::design::SPEED_WANDER,
+            seed: 3,
+        };
+        let s = speed_spread(&scatter);
+        assert!(s > 0.12, "{s}");
+        // Without wander, scatter's passes are steady sweeps again.
+        if let Pattern::Scatter { speed_wander, .. } = &mut scatter.sections[0].pattern {
+            *speed_wander = 0.0;
+        }
+        assert!(speed_spread(&scatter) < 0.01);
     }
 
     #[test]
