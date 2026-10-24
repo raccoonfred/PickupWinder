@@ -275,12 +275,14 @@ pub fn draw_icon(p: &egui::Painter, icon: Icon, r: Rect) {
     }
 }
 
-/// Playback buttons in the status bar.
+/// Playback buttons under the timeline.
 #[derive(Clone, Copy)]
 pub enum Glyph {
     ToStart,
+    Back,
     Play,
     Pause,
+    Forward,
     ToEnd,
 }
 
@@ -319,6 +321,10 @@ pub fn glyph_button(ui: &mut Ui, g: Glyph) -> Response {
             p.add(bar(-5.0));
             p.add(tri(-1.0, 1.0));
         }
+        Glyph::Back => {
+            p.add(tri(-1.0, -3.0));
+            p.add(tri(-1.0, 4.0));
+        }
         Glyph::Play => {
             p.add(tri(1.0, 0.5));
         }
@@ -333,6 +339,10 @@ pub fn glyph_button(ui: &mut Ui, g: Glyph) -> Response {
                 0.0,
                 col,
             ));
+        }
+        Glyph::Forward => {
+            p.add(tri(1.0, -4.0));
+            p.add(tri(1.0, 3.0));
         }
         Glyph::ToEnd => {
             p.add(tri(1.0, -1.0));

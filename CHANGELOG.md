@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **The editor now looks and moves like Fusion 360.** It has a light theme,
   a toolbar of CREATE / INSPECT / MAKE groups and a floating Browser. Edit
-  dialogs have OK and Cancel. Properties floats on the right. Playback
-  controls sit in the status bar.
+  dialogs have OK and Cancel. The timeline shows the sections sized by
+  turns, with playback, scrubbing and a right-click menu. Properties floats
+  on the right.
 - **3D navigation and the ViewCube work as in Fusion and Autodesk.**
   - Scroll zooms at the pointer, middle-drag pans and Shift + middle-drag
     orbits.
