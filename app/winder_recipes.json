@@ -1,0 +1,50 @@
+{
+  "Vintage Single-Coil": {
+    "turns": 8000,
+    "width": 11.0,
+    "rpm": 420,
+    "pass": 110,
+    "jitter": 12,
+    "wire": "42 AWG",
+    "win_h": 11.0,
+    "win_d": 6.0,
+    "core_w": 16.0,
+    "core_l": 46.0
+  },
+  "Hot Single-Coil": {
+    "turns": 9000,
+    "width": 11.0,
+    "rpm": 420,
+    "pass": 105,
+    "jitter": 8,
+    "wire": "42 AWG",
+    "win_h": 11.0,
+    "win_d": 6.0,
+    "core_w": 16.0,
+    "core_l": 46.0
+  },
+  "PAF Humbucker (per coil)": {
+    "turns": 5000,
+    "width": 6.5,
+    "rpm": 450,
+    "pass": 90,
+    "jitter": 15,
+    "wire": "42 AWG",
+    "win_h": 6.5,
+    "win_d": 11.0,
+    "core_w": 16.0,
+    "core_l": 52.0
+  },
+  "Hot Humbucker (per coil)": {
+    "turns": 5500,
+    "width": 6.5,
+    "rpm": 450,
+    "pass": 85,
+    "jitter": 6,
+    "wire": "43 AWG",
+    "win_h": 6.5,
+    "win_d": 11.0,
+    "core_w": 16.0,
+    "core_l": 52.0
+  }
+}
