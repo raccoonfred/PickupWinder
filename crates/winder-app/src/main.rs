@@ -7,6 +7,7 @@
 mod app;
 mod chrome;
 mod editor;
+mod formula;
 mod machine;
 mod model;
 mod view3d;

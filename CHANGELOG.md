@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never closer than one wire per turn. Without it a scatter pass is a
   steady sweep, as a helix is.
 - Playback at 0.1× and 0.25×.
+- **Formulas** in every number field (`side * 0.6`, `channel / od`, …).
+- **Compare**: pin the design as A and see how far each result moves as
+  you edit, then go back to A if you like.
+- **Lay plot zoom**: scroll and drag to look at single passes, with each
+  turn drawn where it landed.
 
 ### Fixed
 - The spindle turns exactly with the turn count at every playback speed,

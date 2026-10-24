@@ -3,7 +3,7 @@
 //! They edit the design in place; the app notices the change and
 //! recomputes, so the coil updates while you type.
 
-use crate::machine;
+use crate::{formula, machine};
 use eframe::egui::{self, DragValue, Ui};
 use winder_core::{Bobbin, Design, Direction, Pattern, Section, Style, WireSpec, wire::WireRef};
 
@@ -27,21 +27,17 @@ pub fn speed(ui: &mut Ui, d: &mut Design) {
         row(
             ui,
             "Spindle RPM",
-            DragValue::new(&mut d.speed.rpm)
-                .range(10.0..=2000.0)
-                .speed(5.0),
+            num(&mut d.speed.rpm).range(10.0..=2000.0).speed(5.0),
         );
         row(
             ui,
             "Ramp (turns)",
-            DragValue::new(&mut d.speed.ramp_turns)
-                .range(0.0..=2000.0)
-                .speed(1.0),
+            num(&mut d.speed.ramp_turns).range(0.0..=2000.0).speed(1.0),
         );
         row(
             ui,
             "Ramp start RPM",
-            DragValue::new(&mut d.speed.ramp_start_rpm)
+            num(&mut d.speed.ramp_start_rpm)
                 .range(10.0..=2000.0)
                 .speed(1.0),
         );
@@ -89,7 +85,7 @@ pub fn auto(ui: &mut Ui, d: &mut Design) {
         }
         if let Some(t) = &mut d.auto.target_dcr_kohm {
             ui.add(
-                DragValue::new(t)
+                num(t)
                     .range(0.1..=50.0)
                     .speed(0.01)
                     .fixed_decimals(2)
@@ -142,7 +138,7 @@ pub fn estimate(ui: &mut Ui, d: &mut Design) {
                 e.tension_g = use_tension.then_some(35.0);
             }
             if let Some(t) = &mut e.tension_g {
-                ui.add(DragValue::new(t).range(1.0..=120.0).suffix(" g"));
+                ui.add(num(t).range(1.0..=120.0).suffix(" g"));
             } else {
                 ui.weak("off: manual pack");
             }
@@ -152,20 +148,18 @@ pub fn estimate(ui: &mut Ui, d: &mut Design) {
             row(
                 ui,
                 "Pack factor",
-                DragValue::new(&mut e.pack).range(0.5..=1.0).speed(0.005),
+                num(&mut e.pack).range(0.5..=1.0).speed(0.005),
             );
         }
         row(
             ui,
             "Scatter (0-100)",
-            DragValue::new(&mut e.scatter).range(0.0..=100.0),
+            num(&mut e.scatter).range(0.0..=100.0),
         );
         row(
             ui,
             "Measure temp",
-            DragValue::new(&mut e.temp_c)
-                .range(-10.0..=80.0)
-                .suffix(" °C"),
+            num(&mut e.temp_c).range(-10.0..=80.0).suffix(" °C"),
         );
     });
 }
@@ -261,7 +255,7 @@ pub fn bobbin(ui: &mut Ui, b: &mut Bobbin) {
         ui.label("Count");
         ui.horizontal(|ui| {
             let mut n = t.pole_count.unwrap_or(u.pole_count);
-            if ui.add(DragValue::new(&mut n).range(0..=12)).changed() {
+            if ui.add(num(&mut n).range(0..=12)).changed() {
                 t.pole_count = Some(n);
             }
             if t.pole_count.is_none() {
@@ -367,7 +361,7 @@ pub fn wire(ui: &mut Ui, d: &mut Design) {
             row(
                 ui,
                 "OD",
-                DragValue::new(&mut w.od_mm)
+                num(&mut w.od_mm)
                     .range(0.02..=1.0)
                     .speed(0.0005)
                     .suffix(" mm"),
@@ -375,7 +369,7 @@ pub fn wire(ui: &mut Ui, d: &mut Design) {
             row(
                 ui,
                 "Bare",
-                DragValue::new(&mut w.bare_mm)
+                num(&mut w.bare_mm)
                     .range(0.02..=1.0)
                     .speed(0.0005)
                     .suffix(" mm"),
@@ -383,7 +377,7 @@ pub fn wire(ui: &mut Ui, d: &mut Design) {
             row(
                 ui,
                 "Resistance",
-                DragValue::new(&mut w.ohm_per_m)
+                num(&mut w.ohm_per_m)
                     .range(0.01..=50.0)
                     .speed(0.01)
                     .suffix(" Ω/m"),
@@ -465,7 +459,7 @@ pub fn winding(ui: &mut Ui, d: &mut Design) {
                 row(
                     ui,
                     "DCR",
-                    DragValue::new(t)
+                    num(t)
                         .range(0.1..=50.0)
                         .speed(0.01)
                         .fixed_decimals(2)
@@ -479,9 +473,7 @@ pub fn winding(ui: &mut Ui, d: &mut Design) {
                 row(
                     ui,
                     "Turns",
-                    DragValue::new(&mut d.sections[0].turns)
-                        .range(1..=100_000)
-                        .speed(10.0),
+                    num(&mut d.sections[0].turns).range(1..=100_000).speed(10.0),
                 );
             }
             None => {
@@ -565,7 +557,7 @@ fn scatter_default(seed: u64, side_by_side: f64) -> Pattern {
 fn tpl_row(ui: &mut Ui, label: &str, tpl: &mut f64, min: f64, window: f64, od: f64) {
     ui.label(label);
     ui.horizontal(|ui| {
-        ui.add(DragValue::new(tpl).range(min.max(1.0)..=2000.0).speed(0.5))
+        ui.add(num(tpl).range(min.max(1.0)..=2000.0).speed(0.5))
             .on_hover_text(
                 "Turns the spindle makes while the guide crosses the window once. \
                  Pickups are usually wound at 50-200.",
@@ -589,7 +581,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
             row(
                 ui,
                 "Turns",
-                DragValue::new(&mut s.turns).range(1..=100_000).speed(10.0),
+                num(&mut s.turns).range(1..=100_000).speed(10.0),
             );
         }
         ui.label("Pattern");
@@ -646,12 +638,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                         *step_fraction = own.then_some(0.15);
                     }
                     if let Some(f) = step_fraction {
-                        ui.add(
-                            DragValue::new(f)
-                                .range(0.02..=1.0)
-                                .speed(0.005)
-                                .suffix(" of a turn"),
-                        );
+                        ui.add(num(f).range(0.02..=1.0).speed(0.005).suffix(" of a turn"));
                     } else {
                         ui.weak("first short end");
                     }
@@ -675,7 +662,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                 row(
                     ui,
                     "Reversal wander",
-                    DragValue::new(reversal_jitter_mm)
+                    num(reversal_jitter_mm)
                         .range(0.0..=3.0)
                         .speed(0.01)
                         .suffix(" mm"),
@@ -686,7 +673,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                     let mut pct = *speed_wander * 100.0;
                     if ui
                         .add(
-                            DragValue::new(&mut pct)
+                            num(&mut pct)
                                 .range(0.0..=80.0)
                                 .speed(0.5)
                                 .max_decimals(0)
@@ -708,7 +695,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                 ui.end_row();
                 ui.label("Seed");
                 ui.horizontal(|ui| {
-                    ui.add(DragValue::new(seed));
+                    ui.add(num(seed));
                     if ui
                         .small_button("New")
                         .on_hover_text("Pick a new random seed")
@@ -730,7 +717,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
                 s.rpm = own_rpm.then_some(420.0);
             }
             if let Some(r) = &mut s.rpm {
-                ui.add(DragValue::new(r).range(10.0..=2000.0).speed(5.0));
+                ui.add(num(r).range(10.0..=2000.0).speed(5.0));
             }
         });
         ui.end_row();
@@ -748,7 +735,7 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64, turns: 
             row(
                 ui,
                 "Dwell at reversal",
-                DragValue::new(&mut s.dwell_turns)
+                num(&mut s.dwell_turns)
                     .range(0.0..=20.0)
                     .speed(0.1)
                     .suffix(" turns"),
@@ -783,9 +770,14 @@ fn row(ui: &mut Ui, label: &str, widget: impl egui::Widget) -> egui::Response {
 }
 
 fn mm(v: &mut f64, max: f64) -> DragValue<'_> {
-    DragValue::new(v)
+    num(v)
         .range(0.0..=max)
         .speed(0.05)
         .max_decimals(2)
         .suffix(" mm")
+}
+
+/// A number field that also takes a formula (see `formula`).
+fn num<Num: egui::emath::Numeric>(v: &mut Num) -> DragValue<'_> {
+    DragValue::new(v).custom_parser(formula::parse)
 }

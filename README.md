@@ -92,6 +92,17 @@ The spindle turns exactly with the turn count; when it turns faster than
 a screen can show (above about 20 turns a second), it is drawn blurred, as
 a camera would see it.
 
+Any number field takes a formula: click it, type `side * 0.6` or
+`5.8 * 1.05` and press Enter. Names stand for the design as it is then:
+`channel`, `core_w`, `core_l`, `depth`, `od` (wire with insulation),
+`side` (turns side by side across the channel), `turns`, `rpm` and `pi`,
+with `+ - * / ^ ( )` and `sqrt`, `round`, `floor`, `ceil`, `abs`, `min`,
+`max`. **Pin as A** (under the results) keeps the current numbers; change
+anything and each line shows how far you are from A, and *Back to A* puts
+it back. In the **Lay** view, scroll to zoom into a few passes (or press
+*Zoom to the marker*): each turn shows as a dot, so you can see scatter's
+hand wander bunch and spread the turns where a helix lays them evenly.
+
 **Winding** is one choice: how the guide lays the wire (perfect layers, a
 helix or scatter) and how much to wind, as a number of turns or as a
 resistance to reach. That is all most pickups need. Under *Advanced* you can

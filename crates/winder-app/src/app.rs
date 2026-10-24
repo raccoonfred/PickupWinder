@@ -6,6 +6,7 @@
 use crate::{
     chrome::{self, Glyph, Icon},
     editor::{self, Kind},
+    formula,
     model::{self, Computed},
     view3d,
     viewcube::BLUE,
@@ -58,6 +59,10 @@ pub struct WinderApp {
     undo: Vec<Design>,
     redo: Vec<Design>,
     committed: Design,
+    /// A design pinned to compare against, with what it computed to.
+    pinned: Option<(Design, Vec<Metric>)>,
+    /// Turns the lay plot is zoomed to.
+    lay_window: views::LayWindow,
     /// Section picked in the panel or on the timeline.
     selected: Option<usize>,
     /// Section a timeline context menu was opened on.
@@ -98,6 +103,8 @@ impl WinderApp {
             undo: Vec::new(),
             redo: Vec::new(),
             committed: Design::simple("strat").expect("preset exists"),
+            lay_window: None,
+            pinned: None,
             selected: None,
             prev: None,
             menu_section: None,
@@ -491,6 +498,7 @@ impl WinderApp {
 
     /// Every parameter, grouped, changing the coil as it is edited.
     fn parameters(&mut self, ui: &mut Ui) {
+        formula::set_design(&self.design);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -502,6 +510,20 @@ impl WinderApp {
                             .desired_width(f32::INFINITY),
                     );
                 });
+                let names: String = formula::names()
+                    .iter()
+                    .map(|(n, v, what)| format!("{n} = {v:.4}   {what}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui.label(
+                    RichText::new("Any number field takes a formula, like side * 0.7")
+                        .size(11.0)
+                        .color(chrome::MUTED),
+                )
+                .on_hover_text(format!(
+                    "Click a field, type a formula and press Enter.\n\
+                     + − * / ^ ( ), and sqrt, round, floor, ceil, abs, min, max.\n\n{names}"
+                ));
                 ui.add_space(4.0);
                 let total = self.design.total_turns();
                 let pattern = match self.design.sections.as_slice() {
@@ -652,38 +674,75 @@ impl WinderApp {
         let d = &self.design;
         let e = &c.estimate;
         let temp = d.estimate.temp_c;
+        let now = metrics(d, c);
+        let pinned = self.pinned.as_ref().map(|(_, m)| m);
         egui::Grid::new("results")
-            .num_columns(2)
-            .spacing([12.0, 3.0])
+            .num_columns(if pinned.is_some() { 3 } else { 2 })
+            .spacing([10.0, 3.0])
             .show(ui, |ui| {
-                let mut kv = |k: &str, v: String| {
-                    ui.label(RichText::new(k).color(chrome::MUTED));
-                    ui.label(RichText::new(v).strong());
+                if pinned.is_some() {
+                    ui.label("");
+                    ui.label(RichText::new("now").color(chrome::MUTED).size(11.0));
+                    ui.label(RichText::new("vs A").color(chrome::MUTED).size(11.0));
                     ui.end_row();
-                };
-                let l = &c.laid;
-                kv("DCR", format!("{:.2} kΩ", l.dcr_kohm));
-                kv(
-                    "Wire",
-                    format!("{:.0} m  ({:.0} ft)", l.length_m, l.length_m * 3.281),
-                );
-                kv(
-                    "Build, long side",
-                    format!(
-                        "{:.2} of {:.1} mm",
-                        l.side_build_mm, d.bobbin.build_depth_mm
-                    ),
-                );
-                kv("Build, short end", format!("{:.2} mm", l.end_build_mm));
-                kv("Fill factor", format!("{:.0} %", l.fill_factor * 100.0));
-                kv("Inductance", format!("{:.2} H", l.inductance_h));
-                kv("Self-capacitance", format!("{:.0} pF", l.cap_pf));
-                kv("Resonant peak", format!("{:.1} kHz", l.resonance_khz));
-                kv("Q", format!("{:.1}", l.q_factor));
-                kv("DCR, layer model", format!("{:.2} kΩ", e.dcr_kohm));
-                kv("Passes", format!("{}", c.stats.passes));
-                kv("Run time", format!("{:.1} min", c.stats.minutes));
+                }
+                for (k, m) in now.iter().enumerate() {
+                    ui.label(RichText::new(m.label).color(chrome::MUTED));
+                    ui.label(RichText::new(&m.text).strong());
+                    if let Some(a) = &pinned {
+                        let delta = m.value - a[k].value;
+                        let tiny = delta.abs() <= m.step / 2.0;
+                        let text = if tiny {
+                            "same".to_string()
+                        } else {
+                            format!("{:+.*}", m.decimals, delta)
+                        };
+                        // Neither way is better in general, so no red or green.
+                        let col = if tiny { chrome::MUTED } else { BLUE };
+                        ui.label(RichText::new(text).color(col).size(11.5))
+                            .on_hover_text(format!("A: {}", a[k].text));
+                    }
+                    ui.end_row();
+                }
             });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(if self.pinned.is_some() {
+                    "Pin again as A"
+                } else {
+                    "Pin as A"
+                })
+                .on_hover_text(
+                    "Keep these numbers as A, then change anything: \
+                     each line shows how far the new design is from A",
+                )
+                .clicked()
+            {
+                self.pinned = self
+                    .computed
+                    .as_ref()
+                    .map(|(d, c)| (d.clone(), metrics(d, c)));
+                self.status = "Pinned as A: change anything to compare.".into();
+            }
+            if self.pinned.is_some() {
+                if ui
+                    .button("Back to A")
+                    .on_hover_text("Put the pinned design back (undo still works)")
+                    .clicked()
+                    && let Some((a, _)) = &self.pinned
+                {
+                    self.design = a.clone();
+                }
+                if ui.button("Unpin").clicked() {
+                    self.pinned = None;
+                }
+            }
+        });
+        let Some((_, c)) = &self.computed else {
+            return;
+        };
+        let d = &self.design;
         if c.laid.build_mm > d.bobbin.build_depth_mm {
             ui.colored_label(WARN, "The coil is deeper than the bobbin allows.");
         }
@@ -744,6 +803,30 @@ impl WinderApp {
                     ui.selectable_value(&mut self.long_side, false, "short end")
                         .on_hover_text("Where tension presses the wire into its grooves");
                 }
+                if self.view == View::Lay {
+                    ui.separator();
+                    if ui
+                        .selectable_label(self.lay_window.is_none(), "Whole wind")
+                        .clicked()
+                    {
+                        self.lay_window = None;
+                    }
+                    if ui
+                        .button("Zoom to the marker")
+                        .on_hover_text("About three passes around the current turn")
+                        .clicked()
+                    {
+                        let span = c.stats.turns / c.stats.passes.max(1) as f64 * 3.0;
+                        let span = span.clamp(60.0, c.stats.turns.max(60.0));
+                        let mid = if self.follow_end {
+                            c.stats.turns / 2.0
+                        } else {
+                            self.scrub
+                        };
+                        let t0 = (mid - span / 2.0).clamp(0.0, (c.stats.turns - span).max(0.0));
+                        self.lay_window = Some((t0, t0 + span));
+                    }
+                }
                 if self.view == View::CrossSection {
                     ui.separator();
                     ui.label("Color by");
@@ -758,7 +841,7 @@ impl WinderApp {
                     View::CrossSection => {
                         views::cross_section(ui, shown, c, station, upto, self.coloring)
                     }
-                    View::Lay => views::lay_plot(ui, shown, c, upto),
+                    View::Lay => views::lay_plot(ui, shown, c, upto, &mut self.lay_window),
                     View::Build => views::build_plot(ui, shown, c, station, upto),
                     View::Coil3d => {}
                 }
@@ -1143,7 +1226,7 @@ impl eframe::App for WinderApp {
         egui::Panel::right("results")
             .frame(bar(chrome::PANEL, (10, 8)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
             .resizable(false)
-            .exact_size(250.0)
+            .exact_size(if self.pinned.is_some() { 310.0 } else { 250.0 })
             .show(ui, |ui| {
                 ui.label(RichText::new("THE COIL").size(11.5).color(chrome::MUTED));
                 ui.add_space(4.0);
@@ -1241,4 +1324,93 @@ fn card(ui: &mut Ui, title: &str, summary: &str, open: bool, add: impl FnOnce(&m
                 });
         });
     ui.add_space(6.0);
+}
+
+/// One line of the results: shown text, and the number behind it for
+/// comparing (to `decimals` places, differences under `step` are "same").
+struct Metric {
+    label: &'static str,
+    text: String,
+    value: f64,
+    decimals: usize,
+    step: f64,
+}
+
+fn metrics(d: &Design, c: &Computed) -> Vec<Metric> {
+    let l = &c.laid;
+    let m = |label, text: String, value: f64, decimals: usize| Metric {
+        label,
+        text,
+        value,
+        decimals,
+        step: 10f64.powi(-(decimals as i32)),
+    };
+    vec![
+        m("DCR", format!("{:.2} kΩ", l.dcr_kohm), l.dcr_kohm, 2),
+        m(
+            "Turns",
+            format!("{}", d.total_turns()),
+            d.total_turns() as f64,
+            0,
+        ),
+        m("Wire", format!("{:.0} m", l.length_m), l.length_m, 0),
+        m(
+            "Build, long side",
+            format!(
+                "{:.2} of {:.1} mm",
+                l.side_build_mm, d.bobbin.build_depth_mm
+            ),
+            l.side_build_mm,
+            2,
+        ),
+        m(
+            "Build, short end",
+            format!("{:.2} mm", l.end_build_mm),
+            l.end_build_mm,
+            2,
+        ),
+        m(
+            "Fill factor",
+            format!("{:.0} %", l.fill_factor * 100.0),
+            l.fill_factor * 100.0,
+            0,
+        ),
+        m(
+            "Inductance",
+            format!("{:.2} H", l.inductance_h),
+            l.inductance_h,
+            2,
+        ),
+        m(
+            "Self-capacitance",
+            format!("{:.0} pF", l.cap_pf),
+            l.cap_pf,
+            0,
+        ),
+        m(
+            "Resonant peak",
+            format!("{:.1} kHz", l.resonance_khz),
+            l.resonance_khz,
+            1,
+        ),
+        m("Q", format!("{:.1}", l.q_factor), l.q_factor, 1),
+        m(
+            "DCR, layer model",
+            format!("{:.2} kΩ", c.estimate.dcr_kohm),
+            c.estimate.dcr_kohm,
+            2,
+        ),
+        m(
+            "Passes",
+            format!("{}", c.stats.passes),
+            c.stats.passes as f64,
+            0,
+        ),
+        m(
+            "Run time",
+            format!("{:.1} min", c.stats.minutes),
+            c.stats.minutes,
+            1,
+        ),
+    ]
 }
