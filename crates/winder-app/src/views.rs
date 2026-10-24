@@ -6,6 +6,7 @@ use winder_core::Design;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    Coil3d,
     CrossSection,
     Lay,
     Build,
@@ -19,8 +20,8 @@ pub enum Coloring {
     Section,
 }
 
-const GRID: Color32 = Color32::from_gray(70);
-const TEXT: Color32 = Color32::from_gray(170);
+const GRID: Color32 = Color32::from_gray(80);
+const TEXT: Color32 = Color32::from_gray(110);
 const ACCENT: Color32 = Color32::from_rgb(255, 122, 77);
 const WARN: Color32 = Color32::from_rgb(224, 122, 90);
 
@@ -70,7 +71,15 @@ impl Frame {
     }
 }
 
-pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, coloring: Coloring) {
+pub fn cross_section(
+    ui: &mut Ui,
+    d: &Design,
+    c: &Computed,
+    station: usize,
+    upto: usize,
+    coloring: Coloring,
+) {
+    let cut = &c.cross.cuts[station];
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
     let rect = resp.rect;
     let channel = c.cross.channel_mm;
@@ -110,10 +119,10 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
     );
 
     // Every turn laid so far.
-    let n = upto.min(c.cross.turns.len());
-    let total = c.cross.turns.len().max(1) as f32;
+    let n = upto.min(cut.len());
+    let total = cut.len().max(1) as f32;
     let r = (c.cross.od_mm as f32 / 2.0 * f.px_per_mm).max(0.6);
-    for t in &c.cross.turns[..n] {
+    for t in &cut[..n] {
         let col = match coloring {
             Coloring::Order => copper(t.n as f32 / total),
             Coloring::Section => SECTION_COLORS[t.section % SECTION_COLORS.len()],
@@ -122,7 +131,7 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
     }
 
     // Guide and the turn being laid.
-    if let Some(t) = n.checked_sub(1).map(|i| c.cross.turns[i]) {
+    if let Some(t) = n.checked_sub(1).map(|i| cut[i]) {
         let p = f.pt(t.y_mm, t.z_mm);
         painter.circle_stroke(p, r + 2.5, Stroke::new(1.5, ACCENT));
         let guide = pos2(p.x, top.y - 14.0);
@@ -146,7 +155,7 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
         FontId::proportional(12.0),
         TEXT,
     );
-    let build = c.cross.build_mm_upto(n);
+    let build = c.cross.build_at(station, n);
     let over = build > d.bobbin.build_depth_mm;
     painter.text(
         pos2(top.x - flange - 6.0, f.pt(0.0, build).y),
@@ -158,7 +167,7 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
 
     // Hover: which turn is this?
     if let Some(pos) = resp.hover_pos() {
-        let hit = c.cross.turns[..n]
+        let hit = cut[..n]
             .iter()
             .rev()
             .find(|t| f.pt(t.y_mm, t.z_mm).distance(pos) <= r.max(3.0));
@@ -172,22 +181,66 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
 }
 
 /// Guide position against turn number.
-pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
-    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
+/// Which turns the lay plot shows; None shows the whole wind.
+pub type LayWindow = Option<(f64, f64)>;
+
+/// Guide position against turn number. Scroll zooms at the pointer, drag
+/// pans, double-click shows the whole wind again.
+pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, win: &mut LayWindow) {
+    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let rect = resp.rect.shrink2(Vec2::new(56.0, 32.0));
     let total = c.stats.turns.max(1.0);
     let channel = c.cross.channel_mm;
-    let x = |t: f64| rect.left() + (t / total) as f32 * rect.width();
+
+    // Zoom and pan.
+    let (mut t0, mut t1) = win.unwrap_or((0.0, total));
+    if let Some(pos) = resp.hover_pos().filter(|p| rect.contains(*p)) {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            let at = t0 + ((pos.x - rect.left()) / rect.width()) as f64 * (t1 - t0);
+            let k = (-scroll as f64 * 0.004).exp();
+            let span = ((t1 - t0) * k).clamp(20.0, total);
+            let f = (at - t0) / (t1 - t0);
+            t0 = at - f * span;
+            t1 = t0 + span;
+        }
+    }
+    if resp.dragged() {
+        let dt = -(resp.drag_delta().x / rect.width()) as f64 * (t1 - t0);
+        t0 += dt;
+        t1 += dt;
+    }
+    if t0 < 0.0 {
+        t1 -= t0;
+        t0 = 0.0;
+    }
+    if t1 > total {
+        t0 -= t1 - total;
+        t1 = total;
+    }
+    t0 = t0.max(0.0);
+    *win = if resp.double_clicked() || (t1 - t0) >= total - 1e-6 {
+        None
+    } else {
+        Some((t0, t1))
+    };
+    let (t0, t1) = win.unwrap_or((0.0, total));
+
+    let x = |t: f64| rect.left() + ((t - t0) / (t1 - t0)) as f32 * rect.width();
     let y = |mm: f64| rect.bottom() - (mm / channel) as f32 * rect.height();
+    let painter = painter.with_clip_rect(rect.expand2(Vec2::new(0.0, 20.0)));
 
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, GRID), egui::StrokeKind::Inside);
     for (i, w) in c.section_bounds.windows(2).enumerate() {
-        let (a, b) = (x(w[0]), x(w[1]));
+        let (a, b) = (x(w[0]).max(rect.left()), x(w[1]).min(rect.right()));
+        if b <= a {
+            continue;
+        }
         if i % 2 == 1 {
             painter.rect_filled(
                 Rect::from_x_y_ranges(a..=b, rect.y_range()),
                 0.0,
-                Color32::from_white_alpha(6),
+                Color32::from_black_alpha(10),
             );
         }
         painter.text(
@@ -198,31 +251,72 @@ pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
             TEXT,
         );
     }
-    let pts: Vec<Pos2> = c.lay.iter().map(|&(t, mm)| pos2(x(t), y(mm))).collect();
-    painter.line(pts, Stroke::new(1.0, Color32::from_rgb(214, 120, 48)));
-    for &s in &c.stops {
+    // The guide, from just before the window to just after it.
+    let first = c.lay.partition_point(|&(t, _)| t < t0).saturating_sub(1);
+    let last = (c.lay.partition_point(|&(t, _)| t <= t1) + 1).min(c.lay.len());
+    let pts: Vec<Pos2> = c.lay[first..last]
+        .iter()
+        .map(|&(t, mm)| pos2(x(t), y(mm)))
+        .collect();
+    painter.line(pts, Stroke::new(1.5, Color32::from_rgb(214, 120, 48)));
+    // Where the wire actually landed, mid long side: it trails the guide.
+    let cut = &c.cross.cuts[c.cross.side_station()];
+    let (n0, n1) = (
+        (t0.floor() as usize).min(cut.len()),
+        (t1.ceil() as usize + 1).min(cut.len()),
+    );
+    let every = (n1 - n0).div_ceil(4000).max(1);
+    let zoomed = (t1 - t0) < 1500.0;
+    let laid: Vec<Pos2> = cut[n0..n1]
+        .iter()
+        .step_by(every)
+        .map(|t| pos2(x(t.n as f64), y(t.y_mm)))
+        .collect();
+    if zoomed {
+        // Close in, each turn is a dot: bunching and spreading shows.
+        for p in &laid {
+            painter.circle_filled(*p, 1.8, Color32::from_rgb(86, 156, 214));
+        }
+    } else {
+        painter.line(laid, Stroke::new(1.0, Color32::from_rgb(86, 156, 214)));
+    }
+    for &s in c.stops.iter().filter(|&&s| s >= t0 && s <= t1) {
         painter.line_segment(
             [pos2(x(s), rect.top()), pos2(x(s), rect.bottom())],
             Stroke::new(1.5, WARN),
         );
     }
-    let sx = x(upto as f64);
-    painter.line_segment(
-        [pos2(sx, rect.top()), pos2(sx, rect.bottom())],
-        Stroke::new(1.5, ACCENT),
-    );
+    if (t0..=t1).contains(&(upto as f64)) {
+        let sx = x(upto as f64);
+        painter.line_segment(
+            [pos2(sx, rect.top()), pos2(sx, rect.bottom())],
+            Stroke::new(1.5, ACCENT),
+        );
+    }
 
+    let hint = if win.is_some() {
+        "orange: guide · blue: each turn as it landed, mid long side · double-click: whole wind"
+    } else {
+        "orange: guide · blue: where the wire landed, mid long side · scroll to zoom in"
+    };
+    painter.text(
+        rect.center_bottom() + Vec2::new(0.0, 14.0),
+        Align2::CENTER_CENTER,
+        hint,
+        FontId::proportional(11.0),
+        TEXT,
+    );
     painter.text(
         rect.left_bottom() + Vec2::new(0.0, 14.0),
         Align2::LEFT_CENTER,
-        "turn 0",
+        format!("turn {t0:.0}"),
         FontId::proportional(11.0),
         TEXT,
     );
     painter.text(
         rect.right_bottom() + Vec2::new(0.0, 14.0),
         Align2::RIGHT_CENTER,
-        format!("{:.0}", total),
+        format!("{t1:.0}"),
         FontId::proportional(11.0),
         TEXT,
     );
@@ -241,18 +335,18 @@ pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
         TEXT,
     );
     if let Some(pos) = resp.hover_pos().filter(|p| rect.contains(*p)) {
-        let t = ((pos.x - rect.left()) / rect.width()) as f64 * total;
+        let t = t0 + ((pos.x - rect.left()) / rect.width()) as f64 * (t1 - t0);
         resp.on_hover_text_at_pointer(format!("turn {t:.0}"));
     }
 }
 
 /// Top of the winding across the channel, now and when finished.
-pub fn build_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
+pub fn build_plot(ui: &mut Ui, d: &Design, c: &Computed, station: usize, upto: usize) {
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
     let rect = resp.rect.shrink2(Vec2::new(56.0, 32.0));
     let bins = 220;
-    let full = profile_upto(&c.cross, usize::MAX, bins);
-    let now = profile_upto(&c.cross, upto, bins);
+    let full = profile_upto(&c.cross, station, usize::MAX, bins);
+    let now = profile_upto(&c.cross, station, upto, bins);
     let max = d
         .bobbin
         .build_depth_mm

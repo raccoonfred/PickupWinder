@@ -8,6 +8,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Settings that follow your changes** (`[auto]` in the design file,
+  **Targets and rules** in the editor):
+  - With **keep the lay**, changing the wire or the window scales each
+    section's turns per pass to keep its pitch, and keeps each
+    perfect-layer section's number of layers.
+  - With a **target DCR**, the fill section's turns are solved on the laid
+    coil to reach it, by the editor and by the CLI.
+- **Fully custom bobbin.** The bobbin dialog sets the kind, the core's
+  corner radius, the flanges (length, width, corner, top and bottom
+  thickness) and the poles (count, spread, diameter, height). These go in
+  an optional `[bobbin.detail]` table; anything left out follows the kind.
+- **Winding as one choice.** The Browser has one Winding node: pattern, and
+  turns or a target resistance. Sections are now an advanced option (a
+  layered base or cover), and new designs start as one scatter winding.
+
+- **Parameters panel.** Every setting is in one panel on the left, in
+  cards that fold away, and changes the coil as you edit it. Undo and redo
+  (Ctrl+Z, Ctrl+Y). The Browser, the edit dialogs and the CREATE tools are
+  gone; sections are added from the Winding card.
+- **Scatter by hand.** New `speed_wander` (Hand wander in the editor, 35 %
+  for new scatter sections): the guide hurries and slows within each pass,
+  never closer than one wire per turn. Without it a scatter pass is a
+  steady sweep, as a helix is.
+- Playback at 0.1× and 0.25×.
+- **Pickup presets**: Strat, Tele bridge, Tele neck, Humbucker and P-90
+  at the top of the panel, each with its real bobbin, wire and usual turns
+  (`Design::pickup`). Switching can be undone.
+- Plain-language names: neat layers / machine / scatter, turns per sweep
+  shown as "wires apart", winding width, max coil thickness, guide to coil
+  (was free span) with an explanation, and a hint on every field.
+- **Formulas** in every number field (`side * 0.6`, `channel / od`, …).
+- **Compare**: pin the design as A and see how far each result moves as
+  you edit, then go back to A if you like.
+- **Lay plot zoom**: scroll and drag to look at single passes, with each
+  turn drawn where it landed.
+
+### Fixed
+- Presets checked against published bobbin sizes: humbucker and P-90
+  cores are rectangles, not round-ended like single coils. PAF bobbin
+  66.7 × 17.5 × 9.5 mm round a 55.6 × 6.35 mm core; P-90 a narrow core
+  with a wide, flat coil out to 30.5 mm (10,000 turns of 42 now give about
+  8.1 kΩ). Moulded bobbins show their pole holes, as they are wound before
+  the screws go in. Tele bridge preset winds 9,200 turns and sits on its
+  wider bottom plate with three mounting ears. `winder new`
+  starts from the same presets as the editor.
+- Counter-clockwise now winds the other way in 3D: the spindle turns the
+  other way, the coil is the mirror image and the wire meets it on the
+  bobbin's other side.
+- The spindle turns exactly with the turn count at every playback speed,
+  and is drawn motion-blurred when it turns faster than the screen can
+  show.
+- Turns are drawn round at the bobbin's ends (a sample every 15°), not
+  with corners.
+- The bobbin in 3D turns steadily. Its angle now runs with the turn count
+  and the wire's contact point follows from it, so it no longer stalls on
+  the long sides and whips round the ends. Fast playback shows a steady
+  spin instead of a strobing one, and the supply wire comes down to the
+  eyelet from above.
+
+### Changed
+- **Real bobbins and a real winder in 3D.**
+  - The bobbin presets now have real sizes. Single coils wind onto six rod
+    magnets: a Strat core is 56.9 × 4.9 mm with round ends. A PAF core is
+    56.5 × 6.5 mm with 6.3 mm between the flanges.
+  - New `corner_radius_mm` and `style` bobbin fields. With them the model
+    uses the true perimeter, and the 3D view draws fibre flatwork with
+    magnets and eyelets, or a moulded humbucker or P-90 bobbin.
+  - The bobbin is mounted on the spindle's platen over the stepper and
+    spins as it winds. The guide eyelet rides a traverse rail, and the wire
+    reaches the coil on a tangent from it.
+  - Files without the new fields keep the old square-cornered core.
+- **The editor now looks and moves like Fusion 360.** It has a light theme,
+  a toolbar of CREATE / INSPECT / MAKE groups and a floating Browser. Edit
+  dialogs have OK and Cancel. The timeline shows the sections sized by
+  turns, with playback, scrubbing and a right-click menu. Properties floats
+  on the right.
+- **3D navigation and the ViewCube work as in Fusion and Autodesk.**
+  - Scroll zooms at the pointer, middle-drag pans and Shift + middle-drag
+    orbits.
+  - The navigation bar has Orbit, Pan, Zoom, Fit and Home, and switches
+    between perspective and orthographic.
+  - The ViewCube turns with the model and has 26 clickable views (faces,
+    edges and corners) with highlight on hover. It also has a draggable
+    compass ring, a home button and arrows to the next face. Moves are
+    animated.
+- **The coil is shown in 3D.** The editor's main view now draws the bobbin
+  and the whole wire as one continuous copper strand, every turn where the
+  lay model put it, with OpenGL and a depth buffer. Orbit, pan and zoom down
+  to single wires; playback shows the newest turns and the guide with its
+  free span. The dot cross-section is now a secondary view.
+- **Winding model rebuilt to match real machines** (see
+  `docs/WINDING_MODEL.md`). Patterns are now set by turns per pass, as
+  geared, cam and CNC pickup winders are: `layer` (perfect layers, with a
+  step zone on the short end and a half-wire climb at each flange), `helix`
+  (fixed traverse ratio) and `scatter` (random turns per pass and reversal
+  points per pass, seeded). Design files move to version 2; version 1 files
+  are converted on load. Python recipes keep their `pass` value.
+- The lay follows each turn through 16 stations around the core, with wire
+  lag behind the guide (`[lay] free_span_mm`). Wire settles into grooves on
+  the short ends and spans straight across the long sides. Crossed helices
+  land at the published 77-79 % fill and perfect layers at about 90 %.
+- Self-capacitance is now worked out from which turns touch which, and
+  inductance from the laid build. The app and `winder sim` show these
+  alongside long-side and short-end build and the fill factor.
+- `winder machine` lists GRBL acceleration and junction settings, so the
+  spindle keeps its speed through the guide's per-turn steps.
+
+### Added
 - **Rust port, milestone 2: desktop design editor (`winder-app`).** An egui
   app that edits a design and redraws it as you type: cross-section of every
   turn (by turn order or section, with hover), lay plot, and build profile

@@ -136,11 +136,35 @@ pub fn estimate(turns: u32, bobbin: &Bobbin, wire: &WireSpec, input: &EstimateIn
     let dcr_kohm = length_m * wire.ohm_per_m / 1000.0 * temp_factor;
     let build_mm = layer as f64 * pitch;
 
-    // Inductance: Wheeler multilayer, L(µH) = 0.8 a² N² / (6a + 9b + 10c),
-    // a = mean radius, b = coil length (axial), c = winding depth, inches.
+    let inductance_h = inductance_h(turns, bobbin, build_mm);
+
+    // Self-capacitance, lowered by scatter.
     let mean_perim_mm = base_perim + std::f64::consts::PI * build_mm;
+    let n = turns as f64;
+    let cap_pf = (n * mean_perim_mm * CAP_PF_PER_TURN_MM * (1.0 - 0.35 * s)).max(1.0);
+    let (res_khz, q_factor) = resonance(inductance_h, cap_pf, dcr_kohm);
+
+    out.dcr_kohm = dcr_kohm;
+    out.length_m = length_m;
+    out.layers = layer;
+    out.build_mm = build_mm;
+    out.turns_per_layer = tpl;
+    out.cap_pf = cap_pf;
+    out.resonance_khz = res_khz;
+    out.pitch_factor = loosen;
+    out.inductance_h = inductance_h;
+    out.q_factor = q_factor;
+    out.eff_pack = eff_pack;
+    out
+}
+
+/// Wheeler's multilayer formula, L(µH) = 0.8 a² N² / (6a + 9b + 10c), with
+/// a = mean radius, b = coil length (axial), c = winding depth, in inches,
+/// scaled by the single-coil calibration (H).
+pub fn inductance_h(turns: u32, bobbin: &Bobbin, build_mm: f64) -> f64 {
+    let mean_perim_mm = bobbin.core_perimeter_mm() + std::f64::consts::PI * build_mm;
     let a_in = mean_perim_mm / (2.0 * std::f64::consts::PI) / 25.4;
-    let b_in = win_h / 25.4;
+    let b_in = bobbin.channel_height_mm / 25.4;
     let c_in = build_mm / 25.4;
     let denom = 6.0 * a_in + 9.0 * b_in + 10.0 * c_in;
     let n = turns as f64;
@@ -149,35 +173,20 @@ pub fn estimate(turns: u32, bobbin: &Bobbin, wire: &WireSpec, input: &EstimateIn
     } else {
         0.0
     };
-    let inductance_h = induct_uh * INDUCTANCE_CALIBRATION * 1e-6;
+    induct_uh * INDUCTANCE_CALIBRATION * 1e-6
+}
 
-    // Self-capacitance, lowered by scatter.
-    let cap_pf = (n * mean_perim_mm * CAP_PF_PER_TURN_MM * (1.0 - 0.35 * s)).max(1.0);
-
-    // RLC resonant peak and Q = (1/R)·√(L/C).
-    let (res_hz, q_factor) = if inductance_h > 0.0 {
-        let c_f = cap_pf * 1e-12;
-        let r = (dcr_kohm * 1000.0).max(1.0);
-        (
-            1.0 / (2.0 * std::f64::consts::PI * (inductance_h * c_f).sqrt()),
-            (inductance_h / c_f).sqrt() / r,
-        )
-    } else {
-        (0.0, 0.0)
-    };
-
-    out.dcr_kohm = dcr_kohm;
-    out.length_m = length_m;
-    out.layers = layer;
-    out.build_mm = build_mm;
-    out.turns_per_layer = tpl;
-    out.cap_pf = cap_pf;
-    out.resonance_khz = res_hz / 1000.0;
-    out.pitch_factor = loosen;
-    out.inductance_h = inductance_h;
-    out.q_factor = q_factor;
-    out.eff_pack = eff_pack;
-    out
+/// RLC resonant peak (kHz) and Q = (1/R)·√(L/C) of the unloaded coil.
+pub fn resonance(inductance_h: f64, cap_pf: f64, dcr_kohm: f64) -> (f64, f64) {
+    if inductance_h <= 0.0 || cap_pf <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let c_f = cap_pf * 1e-12;
+    let r = (dcr_kohm * 1000.0).max(1.0);
+    (
+        1.0 / (2.0 * std::f64::consts::PI * (inductance_h * c_f).sqrt()) / 1000.0,
+        (inductance_h / c_f).sqrt() / r,
+    )
 }
 
 #[cfg(test)]
@@ -194,6 +203,9 @@ mod tests {
             core_width_mm: w,
             core_length_mm: l,
             build_depth_mm: 6.0,
+            corner_radius_mm: 0.0,
+            style: Default::default(),
+            detail: Default::default(),
         }
     }
 

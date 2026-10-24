@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use winder_core::{
-    CrossSection, Design, Estimate, Step, Toolpath, estimate, generate, toolpath::Stats,
+    CrossSection, Design, Estimate, Laid, Step, Toolpath, estimate, generate, toolpath::Stats,
 };
 use winder_gcode::{MachineProfile, post_grbl, verify};
 
@@ -10,6 +10,9 @@ use winder_gcode::{MachineProfile, post_grbl, verify};
 pub struct Computed {
     pub stats: Stats,
     pub cross: CrossSection,
+    /// What the laid coil measures.
+    pub laid: Laid,
+    /// The layer model, kept as a cross-check.
     pub estimate: Estimate,
     /// Turn at which each section starts, plus the total at the end.
     pub section_bounds: Vec<f64>,
@@ -24,6 +27,7 @@ impl Computed {
         let toolpath = generate(design).map_err(|e| e.to_string())?;
         let wire = design.wire_spec().map_err(|e| e.to_string())?;
         let cross = CrossSection::build(design, &toolpath, &wire);
+        let laid = cross.laid(design);
         let estimate = estimate(
             design.total_turns(),
             &design.bobbin,
@@ -44,6 +48,7 @@ impl Computed {
         Ok(Computed {
             stats: toolpath.stats(),
             cross,
+            laid,
             estimate,
             section_bounds,
             stops,
@@ -100,12 +105,13 @@ pub fn load_profile(path: &Path) -> Result<MachineProfile, String> {
     toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Top of the winding across the channel after the first `n` turns.
-pub fn profile_upto(cross: &CrossSection, n: usize, bins: usize) -> Vec<f64> {
+/// Top of the winding across the channel at one station after the first
+/// `n` turns.
+pub fn profile_upto(cross: &CrossSection, station: usize, n: usize, bins: usize) -> Vec<f64> {
     let mut out = vec![0.0f64; bins];
     let w = cross.channel_mm / bins as f64;
     let r = cross.od_mm / 2.0;
-    for t in cross.turns.iter().take(n) {
+    for t in cross.cuts[station].iter().take(n) {
         let lo = ((t.y_mm - r) / w).floor().max(0.0) as usize;
         let hi = (((t.y_mm + r) / w).ceil() as usize).min(bins);
         for (b, slot) in out.iter_mut().enumerate().take(hi).skip(lo) {
@@ -125,7 +131,7 @@ mod tests {
         for p in winder_core::Bobbin::preset_names() {
             let d = Design::example(p).unwrap();
             let c = Computed::new(&d).unwrap();
-            assert_eq!(c.cross.turns.len() as u32, d.total_turns());
+            assert_eq!(c.cross.turn_count() as u32, d.total_turns());
             assert_eq!(c.section_bounds.len(), d.sections.len() + 1);
             assert!(c.lay.len() <= 4000 + c.stats.passes as usize + 2);
         }
@@ -162,8 +168,9 @@ mod tests {
     fn partial_profile_grows() {
         let d = Design::example("strat").unwrap();
         let c = Computed::new(&d).unwrap();
-        let early = profile_upto(&c.cross, 500, 100);
-        let full = profile_upto(&c.cross, usize::MAX, 100);
+        let st = c.cross.side_station();
+        let early = profile_upto(&c.cross, st, 500, 100);
+        let full = profile_upto(&c.cross, st, usize::MAX, 100);
         let sum = |v: &[f64]| v.iter().sum::<f64>();
         assert!(sum(&full) > sum(&early));
     }

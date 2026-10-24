@@ -1,16 +1,28 @@
-//! Window layout, file handling and the scrub/play state.
+//! Window layout, file handling and the scrub/play state. Every parameter
+//! sits in the panel on the left and changes the coil as you edit it (undo
+//! with Ctrl+Z); what the coil measures sits on the right; the views fill
+//! the middle, with the timeline of the wind along the bottom.
 
 use crate::{
-    editor,
+    chrome::{self, Glyph, Icon},
+    editor::{self, Kind},
+    formula,
     model::{self, Computed},
+    view3d,
+    viewcube::BLUE,
     views::{self, Coloring, View},
 };
-use eframe::egui::{self, Color32, RichText, Ui};
-use std::path::PathBuf;
-use winder_core::{Bobbin, Design, recipe};
+use eframe::egui::{
+    self, Align, Color32, FontId, Layout, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
+};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+use winder_core::{Bobbin, Design, Pattern, auto, recipe};
 use winder_gcode::MachineProfile;
 
-const WARN: Color32 = Color32::from_rgb(224, 122, 90);
+const WARN: Color32 = Color32::from_rgb(200, 90, 50);
 
 pub struct WinderApp {
     design: Design,
@@ -25,34 +37,77 @@ pub struct WinderApp {
     status: String,
     view: View,
     coloring: Coloring,
+    camera: view3d::Camera,
+    /// The 3D view's GPU side; None without OpenGL 3.
+    renderer: Option<Arc<Mutex<view3d::Renderer>>>,
+    /// Cut through the long side (true) or the short end.
+    long_side: bool,
     /// Turns shown; follows the end of the coil unless scrubbed or playing.
     scrub: f64,
     follow_end: bool,
     playing: bool,
+    /// How far round the spindle is in the turn under way, as drawn. At
+    /// fast playback it turns at a speed you can still follow.
+    spin_phase: f64,
+    /// How far the spindle turned in the last frame (rad).
+    spin_sweep: f64,
     /// Playback speed as a multiple of the real winding speed.
     speedup: f64,
     imported: Vec<recipe::Imported>,
+    /// Designs to go back to (Ctrl+Z) and forward to again, and the design
+    /// as of the last step taken.
+    undo: Vec<Design>,
+    redo: Vec<Design>,
+    committed: Design,
+    /// A design pinned to compare against, with what it computed to.
+    pinned: Option<(Design, Vec<Metric>)>,
+    /// Turns the lay plot is zoomed to.
+    lay_window: views::LayWindow,
+    /// Section picked in the panel or on the timeline.
+    selected: Option<usize>,
+    /// Section a timeline context menu was opened on.
+    menu_section: Option<usize>,
+    /// The design as it was last frame, to see what an edit changed; None
+    /// after opening a different design.
+    prev: Option<Design>,
 }
 
 impl WinderApp {
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> WinderApp {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        chrome::fusion_style(&cc.egui_ctx);
         let mut app = WinderApp {
-            design: Design::example("strat").expect("preset exists"),
+            design: Design::pickup("strat").expect("preset exists"),
             path: None,
-            saved: Design::example("strat").expect("preset exists"),
+            saved: Design::pickup("strat").expect("preset exists"),
             profile: MachineProfile::default(),
             profile_path: None,
             computed: None,
             error: None,
             status: "New design from the Strat preset.".into(),
-            view: View::CrossSection,
+            view: View::Coil3d,
             coloring: Coloring::Order,
+            camera: view3d::Camera::default(),
+            renderer: cc
+                .gl
+                .as_ref()
+                .and_then(|gl| view3d::Renderer::new(gl).ok())
+                .map(|r| Arc::new(Mutex::new(r))),
+            long_side: true,
             scrub: 0.0,
             follow_end: true,
             playing: false,
+            spin_phase: 0.0,
+            spin_sweep: 0.0,
             speedup: 60.0,
             imported: Vec::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            committed: Design::pickup("strat").expect("preset exists"),
+            lay_window: None,
+            pinned: None,
+            selected: None,
+            prev: None,
+            menu_section: None,
         };
         if let Some(p) = path {
             app.open_path(p);
@@ -64,7 +119,24 @@ impl WinderApp {
         self.design != self.saved
     }
 
-    fn recompute(&mut self) {
+    /// Let settings that follow other settings catch up with an edit.
+    fn follow(&mut self) {
+        if let Some(prev) = &self.prev
+            && *prev != self.design
+        {
+            let changed = auto::follow(prev, &mut self.design);
+            if !changed.is_empty() {
+                let what: Vec<String> = changed
+                    .iter()
+                    .map(|f| format!("section {} {}", f.section + 1, f.what))
+                    .collect();
+                self.status = format!("Kept the lay: {}", what.join("; "));
+            }
+        }
+        self.prev = Some(self.design.clone());
+    }
+
+    fn recompute(&mut self, settled: bool) {
         if self
             .computed
             .as_ref()
@@ -72,9 +144,33 @@ impl WinderApp {
         {
             return;
         }
+        // Hitting a target DCR lays the coil a few times, so it waits until
+        // a drag is let go.
+        if settled && self.design.auto.target_dcr_kohm.is_some() && self.design.validate().is_ok() {
+            let mut d = self.design.clone();
+            match auto::solve(&mut d) {
+                Ok(Some(s)) if d.sections[s.section].turns != s.turns_before => {
+                    self.status = format!(
+                        "Target {:.2} kΩ: section {} set to {} turns (was {}).",
+                        d.auto.target_dcr_kohm.unwrap_or_default(),
+                        s.section + 1,
+                        d.sections[s.section].turns,
+                        s.turns_before
+                    );
+                    self.design = d;
+                    self.prev = Some(self.design.clone());
+                }
+                Ok(_) => {}
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
         match Computed::new(&self.design) {
             Ok(c) => {
                 self.error = None;
+                if let Some(r) = &self.renderer {
+                    let g = view3d::Geometry::build(&self.design, &c);
+                    r.lock().expect("renderer lock").set(g);
+                }
                 self.computed = Some((self.design.clone(), c));
             }
             // Keep showing the last good design while this one is invalid.
@@ -86,15 +182,94 @@ impl WinderApp {
         self.computed.as_ref().map_or(0.0, |(_, c)| c.stats.turns)
     }
 
+    /// Add a section of `kind` after the others.
+    fn create(&mut self, kind: Kind) {
+        let s = editor::new_section(&self.design, kind);
+        self.design.sections.push(s);
+        self.selected = Some(self.design.sections.len() - 1);
+        self.follow_end = true;
+    }
+
+    /// Take a step for undo once an edit has settled (a drag let go).
+    fn commit(&mut self, settled: bool) {
+        if settled && self.design != self.committed {
+            let before = std::mem::replace(&mut self.committed, self.design.clone());
+            self.undo.push(before);
+            if self.undo.len() > 200 {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(d) = self.undo.pop() {
+            self.redo
+                .push(std::mem::replace(&mut self.design, d.clone()));
+            self.committed = d;
+            self.status = "Undone.".into();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(d) = self.redo.pop() {
+            self.undo
+                .push(std::mem::replace(&mut self.design, d.clone()));
+            self.committed = d;
+            self.status = "Redone.".into();
+        }
+    }
+
+    fn duplicate(&mut self, i: usize) {
+        if let Some(s) = self.design.sections.get(i).cloned() {
+            self.design.sections.insert(i + 1, s);
+            self.selected = Some(i + 1);
+        }
+    }
+
+    fn delete(&mut self, i: usize) {
+        if self.design.sections.len() > 1 && i < self.design.sections.len() {
+            self.design.sections.remove(i);
+            self.selected = None;
+        } else {
+            self.status = "A design needs at least one section.".into();
+        }
+    }
+
+    fn move_section(&mut self, i: usize, later: bool) {
+        let n = self.design.sections.len();
+        let j = if later { i + 1 } else { i.wrapping_sub(1) };
+        if i < n && j < n {
+            self.design.sections.swap(i, j);
+            self.selected = Some(j);
+        }
+    }
+
     // ---------- files ----------
 
     fn new_from(&mut self, preset: &str) {
-        if let Some(d) = Design::example(preset) {
+        if let Some(d) = Design::pickup(preset) {
             self.design = d.clone();
             self.saved = d;
             self.path = None;
+            self.prev = None;
             self.follow_end = true;
             self.status = format!("New design from the {preset} preset.");
+        }
+    }
+
+    /// Start over from a kind of pickup; undo goes back.
+    fn switch_to(&mut self, preset: &str) {
+        if let Some(d) = Design::pickup(preset) {
+            self.design = d;
+            self.path = None;
+            self.prev = None;
+            self.follow_end = true;
+            self.lay_window = None;
+            self.status = format!(
+                "Switched to {}. Ctrl+Z goes back to what you had.",
+                preset_label(preset)
+            );
         }
     }
 
@@ -112,6 +287,7 @@ impl WinderApp {
             Ok(d) => {
                 self.design = d.clone();
                 self.saved = d;
+                self.prev = None;
                 self.status = format!("Opened {}", p.display());
                 self.path = Some(p);
                 self.follow_end = true;
@@ -186,9 +362,9 @@ impl WinderApp {
         }
     }
 
-    // ---------- panels ----------
+    // ---------- top ----------
 
-    fn menu_bar(&mut self, ui: &mut Ui) {
+    fn app_bar(&mut self, ui: &mut Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 ui.menu_button("New from preset", |ui| {
@@ -219,17 +395,309 @@ impl WinderApp {
                     self.machine_dialog();
                 }
             });
-            ui.separator();
+            if ui.button("Save").on_hover_text("Save (Ctrl+S)").clicked() {
+                self.save(false);
+            }
+            ui.add_space(12.0);
+            // The document tab.
             let name = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
-                || "unsaved design".to_string(),
+                || format!("{} (unsaved)", self.design.name),
                 |n| n.to_string_lossy().into_owned(),
             );
-            ui.weak(format!("{name}{}", if self.dirty() { " •" } else { "" }));
+            let text = format!("{name}{}", if self.dirty() { "  •" } else { "" });
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text, FontId::proportional(12.5), chrome::INK);
+            let (r, _) = ui.allocate_exact_size(vec2(galley.size().x + 28.0, 24.0), Sense::hover());
+            ui.painter().rect(
+                r,
+                egui::CornerRadius {
+                    nw: 4,
+                    ne: 4,
+                    sw: 0,
+                    se: 0,
+                },
+                Color32::WHITE,
+                Stroke::new(1.0, Color32::from_gray(205)),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter()
+                .rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 2.0)), 0.0, BLUE);
+            ui.painter().galley(
+                pos2(r.left() + 14.0, r.center().y - galley.size().y / 2.0),
+                galley,
+                chrome::INK,
+            );
         });
     }
 
-    fn results_panel(&mut self, ui: &mut Ui) {
-        ui.heading("Estimate");
+    fn toolbar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            chrome::group(ui, "EDIT", |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
+                        .on_hover_text("Ctrl+Z")
+                        .clicked()
+                    {
+                        self.undo();
+                    }
+                    if ui
+                        .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
+                        .on_hover_text("Ctrl+Y or Ctrl+Shift+Z")
+                        .clicked()
+                    {
+                        self.redo();
+                    }
+                });
+            });
+            ui.separator();
+            chrome::group(ui, "VIEW", |ui| {
+                for (icon, label, view, tip) in [
+                    (
+                        Icon::Coil3d,
+                        "3D",
+                        View::Coil3d,
+                        "The coil in 3D, every turn",
+                    ),
+                    (
+                        Icon::Section,
+                        "Section",
+                        View::CrossSection,
+                        "Cut through the coil",
+                    ),
+                    (
+                        Icon::Lay,
+                        "Lay",
+                        View::Lay,
+                        "Where the guide puts the wire, turn by turn",
+                    ),
+                    (
+                        Icon::Build,
+                        "Build",
+                        View::Build,
+                        "How deep the coil builds across the window",
+                    ),
+                ] {
+                    if chrome::tool_button(ui, icon, label, self.view == view)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.view = view;
+                    }
+                }
+            });
+            ui.separator();
+            chrome::group(ui, "MAKE", |ui| {
+                if chrome::tool_button(ui, Icon::Export, "G-code", false)
+                    .on_hover_text("Bake the program, read it back to check it, then save it")
+                    .clicked()
+                {
+                    self.export_dialog();
+                }
+                if chrome::tool_button(ui, Icon::Machine, "Machine", false)
+                    .on_hover_text(format!(
+                        "{}\nClick to load another machine profile",
+                        self.profile.name
+                    ))
+                    .clicked()
+                {
+                    self.machine_dialog();
+                }
+            });
+        });
+    }
+
+    // ---------- side panels ----------
+
+    /// Every parameter, grouped, changing the coil as it is edited.
+    fn parameters(&mut self, ui: &mut Ui) {
+        formula::set_design(&self.design);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Name").color(chrome::MUTED));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.design.name)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                // Kinds of pickup, one click each.
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for p in Bobbin::preset_names() {
+                        let on = Design::pickup(p)
+                            .is_some_and(|d| d.bobbin.style == self.design.bobbin.style);
+                        if ui
+                            .selectable_label(on, preset_label(p))
+                            .on_hover_text(preset_hint(p))
+                            .clicked()
+                        {
+                            self.switch_to(p);
+                        }
+                    }
+                });
+                ui.add_space(2.0);
+                let names: String = formula::names()
+                    .iter()
+                    .map(|(n, v, what)| format!("{n} = {v:.4}   {what}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui.label(
+                    RichText::new("Any number field takes a formula, like side * 0.7")
+                        .size(11.0)
+                        .color(chrome::MUTED),
+                )
+                .on_hover_text(format!(
+                    "Click a field, type a formula and press Enter.\n\
+                     + − * / ^ ( ), and sqrt, round, floor, ceil, abs, min, max.\n\n{names}"
+                ));
+                ui.add_space(4.0);
+                let total = self.design.total_turns();
+                let pattern = match self.design.sections.as_slice() {
+                    [one] => pattern_name(&one.pattern).to_string(),
+                    many => format!("{} sections", many.len()),
+                };
+                card(
+                    ui,
+                    "Winding",
+                    &format!("{pattern} · {total} turns"),
+                    true,
+                    |ui| {
+                        editor::winding(ui, &mut self.design);
+                        if self.design.sections.len() > 1 {
+                            ui.add_space(4.0);
+                            self.sections_list(ui);
+                        }
+                    },
+                );
+                let b = &self.design.bobbin;
+                let size = format!(
+                    "{} · {:.1} × {:.1} mm",
+                    b.style.label(),
+                    b.core_length_mm,
+                    b.core_width_mm
+                );
+                card(ui, "Bobbin", &size, true, |ui| {
+                    editor::bobbin(ui, &mut self.design.bobbin)
+                });
+                let wire = self.design.wire_spec().map(|w| w.name).unwrap_or_default();
+                card(ui, "Wire", &wire, true, |ui| {
+                    editor::wire(ui, &mut self.design)
+                });
+                let rpm = format!("{:.0} RPM", self.design.speed.rpm);
+                card(ui, "Speed", &rpm, false, |ui| {
+                    editor::speed(ui, &mut self.design)
+                });
+                let rules = if self.design.auto.keep_lay {
+                    "keep the lay"
+                } else {
+                    "off"
+                };
+                card(ui, "Automatic", rules, false, |ui| {
+                    editor::auto(ui, &mut self.design)
+                });
+                let span = format!("{:.0} mm away", self.design.lay.free_span_mm);
+                card(ui, "Guide", &span, false, |ui| {
+                    editor::wire_path(ui, &mut self.design)
+                });
+                card(ui, "Estimate settings", "", false, |ui| {
+                    editor::estimate(ui, &mut self.design)
+                });
+                card(ui, "Notes", "", false, |ui| {
+                    editor::document(ui, &mut self.design)
+                });
+                if let Some(err) = &self.error {
+                    ui.add_space(4.0);
+                    ui.colored_label(WARN, err);
+                }
+                ui.add_space(8.0);
+            });
+    }
+
+    /// The sections of a winding wound in parts, each opening its settings.
+    fn sections_list(&mut self, ui: &mut Ui) {
+        let mut action = None;
+        let fill = self
+            .design
+            .auto
+            .target_dcr_kohm
+            .map(|_| auto::fill_index(&self.design));
+        for i in 0..self.design.sections.len() {
+            let s = &self.design.sections[i];
+            let title = format!("{}  {}", i + 1, pattern_name(&s.pattern));
+            let detail = if fill == Some(i) {
+                format!("{} turns · auto", s.turns)
+            } else {
+                format!("{} turns", s.turns)
+            };
+            let open = self.selected == Some(i);
+            let id = ui.make_persistent_id(("section-card", i));
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                open,
+            );
+            if open {
+                state.set_open(true);
+            }
+            let header = state.show_header(ui, |ui| {
+                ui.label(RichText::new(title).strong());
+                ui.label(RichText::new(detail).color(chrome::MUTED).size(11.5));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("✕").on_hover_text("Delete").clicked() {
+                        action = Some((i, 4));
+                    }
+                    if ui.small_button("⧉").on_hover_text("Duplicate").clicked() {
+                        action = Some((i, 1));
+                    }
+                    if ui.small_button("▼").on_hover_text("Wind later").clicked() {
+                        action = Some((i, 3));
+                    }
+                    if ui.small_button("▲").on_hover_text("Wind earlier").clicked() {
+                        action = Some((i, 2));
+                    }
+                });
+            });
+            header.body(|ui| {
+                editor::section_form(ui, &mut self.design, i);
+            });
+            if open {
+                self.selected = None;
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Add").color(chrome::MUTED));
+            for (label, kind) in [
+                ("Neat layers", Kind::Layer),
+                ("Machine", Kind::Helix),
+                ("Scatter", Kind::Scatter),
+            ] {
+                if ui.small_button(label).clicked() {
+                    self.create(kind);
+                }
+            }
+        });
+        ui.add_space(4.0);
+        if let Some((i, a)) = action {
+            self.section_action(i, a);
+        }
+    }
+
+    fn section_action(&mut self, i: usize, a: u8) {
+        match a {
+            0 => self.selected = Some(i),
+            1 => self.duplicate(i),
+            2 => self.move_section(i, false),
+            3 => self.move_section(i, true),
+            _ => self.delete(i),
+        }
+    }
+
+    fn results(&mut self, ui: &mut Ui) {
         let Some((_, c)) = &self.computed else {
             ui.label("No valid design yet.");
             return;
@@ -237,44 +705,76 @@ impl WinderApp {
         let d = &self.design;
         let e = &c.estimate;
         let temp = d.estimate.temp_c;
+        let now = metrics(d, c);
+        let pinned = self.pinned.as_ref().map(|(_, m)| m);
         egui::Grid::new("results")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
+            .num_columns(if pinned.is_some() { 3 } else { 2 })
+            .spacing([10.0, 3.0])
             .show(ui, |ui| {
-                let mut kv = |k: &str, v: String| {
-                    ui.label(k);
-                    ui.label(RichText::new(v).strong());
+                if pinned.is_some() {
+                    ui.label("");
+                    ui.label(RichText::new("now").color(chrome::MUTED).size(11.0));
+                    ui.label(RichText::new("vs A").color(chrome::MUTED).size(11.0));
                     ui.end_row();
-                };
-                kv(
-                    "DCR, from the lay",
-                    format!("{:.2} kΩ", c.cross.dcr_kohm(temp)),
-                );
-                kv("DCR, layer model", format!("{:.2} kΩ", e.dcr_kohm));
-                kv(
-                    "Wire",
-                    format!(
-                        "{:.0} m  ({:.0} ft)",
-                        c.cross.length_m(),
-                        c.cross.length_m() * 3.281
-                    ),
-                );
-                kv(
-                    "Build",
-                    format!(
-                        "{:.2} of {:.1} mm",
-                        c.cross.build_mm(),
-                        d.bobbin.build_depth_mm
-                    ),
-                );
-                kv("Inductance", format!("{:.2} H", e.inductance_h));
-                kv("Self-capacitance", format!("{:.0} pF", e.cap_pf));
-                kv("Resonant peak", format!("{:.1} kHz", e.resonance_khz));
-                kv("Q", format!("{:.1}", e.q_factor));
-                kv("Passes", format!("{}", c.stats.passes));
-                kv("Run time", format!("{:.1} min", c.stats.minutes));
+                }
+                for (k, m) in now.iter().enumerate() {
+                    ui.label(RichText::new(m.label).color(chrome::MUTED));
+                    ui.label(RichText::new(&m.text).strong());
+                    if let Some(a) = &pinned {
+                        let delta = m.value - a[k].value;
+                        let tiny = delta.abs() <= m.step / 2.0;
+                        let text = if tiny {
+                            "same".to_string()
+                        } else {
+                            format!("{:+.*}", m.decimals, delta)
+                        };
+                        // Neither way is better in general, so no red or green.
+                        let col = if tiny { chrome::MUTED } else { BLUE };
+                        ui.label(RichText::new(text).color(col).size(11.5))
+                            .on_hover_text(format!("A: {}", a[k].text));
+                    }
+                    ui.end_row();
+                }
             });
-        if c.cross.build_mm() > d.bobbin.build_depth_mm {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(if self.pinned.is_some() {
+                    "Pin again as A"
+                } else {
+                    "Pin as A"
+                })
+                .on_hover_text(
+                    "Keep these numbers as A, then change anything: \
+                     each line shows how far the new design is from A",
+                )
+                .clicked()
+            {
+                self.pinned = self
+                    .computed
+                    .as_ref()
+                    .map(|(d, c)| (d.clone(), metrics(d, c)));
+                self.status = "Pinned as A: change anything to compare.".into();
+            }
+            if self.pinned.is_some() {
+                if ui
+                    .button("Back to A")
+                    .on_hover_text("Put the pinned design back (undo still works)")
+                    .clicked()
+                    && let Some((a, _)) = &self.pinned
+                {
+                    self.design = a.clone();
+                }
+                if ui.button("Unpin").clicked() {
+                    self.pinned = None;
+                }
+            }
+        });
+        let Some((_, c)) = &self.computed else {
+            return;
+        };
+        let d = &self.design;
+        if c.laid.build_mm > d.bobbin.build_depth_mm {
             ui.colored_label(WARN, "The coil is deeper than the bobbin allows.");
         }
         if e.break_warning() {
@@ -283,56 +783,115 @@ impl WinderApp {
                 format!("Tension is {:.0}% of breaking force.", e.break_risk * 100.0),
             );
         }
-        ui.weak(format!("DCR at {temp:.0} °C. L, C and the peak are estimates; measure finished coils to calibrate."));
-
-        ui.add_space(12.0);
-        ui.heading("Machine");
-        ui.label(&self.profile.name);
-        ui.weak(format!(
-            "{} steps/turn · {} steps/mm · max {:.0} RPM · flange at {:.2} mm",
-            self.profile.spindle_steps_per_turn,
-            self.profile.traverse_steps_per_mm,
-            self.profile.max_rpm,
-            self.profile.flange_offset_mm
-        ));
-        ui.add_space(6.0);
-        let ok = self.error.is_none();
-        if ui
-            .add_enabled(
-                ok,
-                egui::Button::new(RichText::new("Export G-code…").strong()),
-            )
-            .on_hover_text("Bakes the program, reads it back to check it, then saves it")
-            .clicked()
-        {
-            self.export_dialog();
-        }
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(format!(
+                "From where every turn lands. DCR at {temp:.0} °C; L, C and the peak are \
+                 estimates until you calibrate with measured coils."
+            ))
+            .size(11.0)
+            .color(chrome::MUTED),
+        );
     }
 
-    fn view_toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.view, View::CrossSection, "Cross-section");
-            ui.selectable_value(&mut self.view, View::Lay, "Lay plot");
-            ui.selectable_value(&mut self.view, View::Build, "Build profile");
-            if self.view == View::CrossSection {
-                ui.separator();
-                ui.label("Color by");
-                ui.selectable_value(&mut self.coloring, Coloring::Order, "turn order");
-                ui.selectable_value(&mut self.coloring, Coloring::Section, "section");
-            }
-        });
-        let total = self.total_turns();
-        ui.horizontal(|ui| {
-            let label = if self.playing { "Pause" } else { "Play" };
-            if ui.button(label).clicked() {
-                if !self.playing && self.scrub >= total {
-                    self.scrub = 0.0;
+    // ---------- canvas ----------
+
+    fn canvas(&mut self, ui: &mut Ui) {
+        let Some((shown, c)) = &self.computed else {
+            return;
+        };
+        let upto = self.scrub.round() as usize;
+        let station = if self.long_side {
+            c.cross.side_station()
+        } else {
+            c.cross.end_station()
+        };
+        if self.view == View::Coil3d {
+            view3d::coil_3d(
+                ui,
+                shown,
+                c,
+                self.scrub,
+                self.spin_phase as f32,
+                self.spin_sweep as f32,
+                &mut self.camera,
+                self.renderer.as_ref(),
+            );
+            return;
+        }
+        // The flat views get a white sheet with their options along the top.
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
+        let inner = rect.shrink2(vec2(16.0, 8.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(views_title(self.view)).strong());
+                if matches!(self.view, View::CrossSection | View::Build) {
+                    ui.separator();
+                    ui.label("Cut through");
+                    ui.selectable_value(&mut self.long_side, true, "long side")
+                        .on_hover_text("Where the wire spans straight: the coil bulges here");
+                    ui.selectable_value(&mut self.long_side, false, "short end")
+                        .on_hover_text("Where tension presses the wire into its grooves");
                 }
-                self.playing = !self.playing;
-                self.follow_end = false;
-            }
-            if ui
-                .button("Start")
+                if self.view == View::Lay {
+                    ui.separator();
+                    if ui
+                        .selectable_label(self.lay_window.is_none(), "Whole wind")
+                        .clicked()
+                    {
+                        self.lay_window = None;
+                    }
+                    if ui
+                        .button("Zoom to the marker")
+                        .on_hover_text("About three passes around the current turn")
+                        .clicked()
+                    {
+                        let span = c.stats.turns / c.stats.passes.max(1) as f64 * 3.0;
+                        let span = span.clamp(60.0, c.stats.turns.max(60.0));
+                        let mid = if self.follow_end {
+                            c.stats.turns / 2.0
+                        } else {
+                            self.scrub
+                        };
+                        let t0 = (mid - span / 2.0).clamp(0.0, (c.stats.turns - span).max(0.0));
+                        self.lay_window = Some((t0, t0 + span));
+                    }
+                }
+                if self.view == View::CrossSection {
+                    ui.separator();
+                    ui.label("Color by");
+                    ui.selectable_value(&mut self.coloring, Coloring::Order, "turn order");
+                    ui.selectable_value(&mut self.coloring, Coloring::Section, "section");
+                }
+            });
+            ui.add_space(4.0);
+            let body = ui.available_rect_before_wrap();
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                match self.view {
+                    View::CrossSection => {
+                        views::cross_section(ui, shown, c, station, upto, self.coloring)
+                    }
+                    View::Lay => views::lay_plot(ui, shown, c, upto, &mut self.lay_window),
+                    View::Build => views::build_plot(ui, shown, c, station, upto),
+                    View::Coil3d => {}
+                }
+            });
+        });
+    }
+
+    // ---------- timeline ----------
+
+    fn timeline(&mut self, ui: &mut Ui) {
+        let total = self.total_turns();
+        let bounds: Vec<f64> = self
+            .computed
+            .as_ref()
+            .map(|(_, c)| c.section_bounds.clone())
+            .unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            if chrome::glyph_button(ui, Glyph::ToStart)
                 .on_hover_text("Back to the first turn")
                 .clicked()
             {
@@ -340,38 +899,199 @@ impl WinderApp {
                 self.playing = false;
                 self.follow_end = false;
             }
-            if ui
-                .button("End")
+            if chrome::glyph_button(ui, Glyph::Back)
+                .on_hover_text("Previous section")
+                .clicked()
+            {
+                let now = self.scrub - 0.5;
+                self.scrub = bounds
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&b| b < now)
+                    .unwrap_or(0.0);
+                self.playing = false;
+                self.follow_end = false;
+            }
+            let g = if self.playing {
+                Glyph::Pause
+            } else {
+                Glyph::Play
+            };
+            if chrome::glyph_button(ui, g)
+                .on_hover_text(if self.playing { "Pause" } else { "Wind it" })
+                .clicked()
+            {
+                if !self.playing && self.scrub >= total {
+                    self.scrub = 0.0;
+                }
+                self.playing = !self.playing;
+                self.follow_end = false;
+            }
+            if chrome::glyph_button(ui, Glyph::Forward)
+                .on_hover_text("Next section")
+                .clicked()
+            {
+                let now = self.scrub + 0.5;
+                self.scrub = bounds.iter().copied().find(|&b| b > now).unwrap_or(total);
+                self.playing = false;
+                self.follow_end = self.scrub >= total;
+            }
+            if chrome::glyph_button(ui, Glyph::ToEnd)
                 .on_hover_text("The finished coil")
                 .clicked()
             {
                 self.playing = false;
                 self.follow_end = true;
             }
+            ui.add_space(6.0);
             egui::ComboBox::from_id_salt("speed")
                 .selected_text(format!("{}×", self.speedup))
-                .width(64.0)
+                .width(62.0)
                 .show_ui(ui, |ui| {
-                    for s in [1.0, 10.0, 60.0, 300.0, 1000.0] {
+                    for s in [0.1, 0.25, 1.0, 10.0, 60.0, 300.0, 1000.0] {
                         ui.selectable_value(&mut self.speedup, s, format!("{s}×"));
                     }
-                });
-            ui.spacing_mut().slider_width = (ui.available_width() - 120.0).max(100.0);
-            // Playback keeps a fractional position; the slider shows whole
-            // turns, so only a real drag or edit counts as scrubbing.
-            let shown = self.scrub.round();
-            let mut v = shown;
-            ui.add(
-                egui::Slider::new(&mut v, 0.0..=total.max(1.0))
-                    .step_by(1.0)
-                    .text("turns"),
+                })
+                .response
+                .on_hover_text(format!(
+                    "Playback speed against the real wind: the spindle turns at \
+                     {:.0} RPM on screen ({:.1} turns a second). Above about 20 \
+                     turns a second it is drawn blurred, as a camera would see it.",
+                    self.design.speed.rpm * self.speedup,
+                    self.design.speed.rpm / 60.0 * self.speedup
+                ));
+            ui.add_space(8.0);
+            let readout = 150.0;
+            let w = (ui.available_width() - readout).max(120.0);
+            self.feature_strip(ui, w, total);
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("{:.0} / {:.0} turns", self.scrub.round(), total))
+                    .monospace()
+                    .color(chrome::INK),
             );
-            if v != shown {
-                self.scrub = v;
-                self.playing = false;
-                self.follow_end = v >= total;
+        });
+    }
+
+    /// Sections as features in a row, sized by their turns, with the marker
+    /// at the turn shown. Drag to scrub; click a section to select it,
+    /// double-click to edit it, right-click for more.
+    fn feature_strip(&mut self, ui: &mut Ui, width: f32, total: f64) {
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click_and_drag());
+        let Some((shown, _)) = &self.computed else {
+            return;
+        };
+        let sections = shown.sections.clone();
+        let sum: f64 = sections
+            .iter()
+            .map(|s| s.turns as f64)
+            .sum::<f64>()
+            .max(1.0);
+        let x_of = |t: f64| rect.left() + (t / sum) as f32 * rect.width();
+        let t_of = |x: f32| ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * sum;
+        let p = ui.painter_at(rect.expand(6.0));
+        p.rect_filled(rect, 3.0, Color32::from_gray(232));
+
+        let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
+        let mut start = 0.0;
+        let mut blocks = Vec::new();
+        for s in &sections {
+            let end = start + s.turns as f64;
+            blocks.push((x_of(start), x_of(end)));
+            start = end;
+        }
+        let under = |x: f32| blocks.iter().position(|&(a, b)| x >= a && x < b);
+        let hovered = pointer.and_then(|p| under(p.x));
+        let done_x = x_of(self.scrub.min(sum));
+        for (i, (s, &(a, b))) in sections.iter().zip(&blocks).enumerate() {
+            let r =
+                Rect::from_x_y_ranges(a + 1.0..=(b - 1.0).max(a + 2.0), rect.y_range().shrink(3.0));
+            let col = pattern_color(&s.pattern);
+            // Turns not wound yet at the marker are rolled back, as features
+            // after Fusion's marker are.
+            p.rect_filled(r, 2.0, col.gamma_multiply(0.3));
+            if done_x > r.left() {
+                let wound = Rect::from_min_max(r.min, pos2(done_x.min(r.right()), r.max.y));
+                p.rect_filled(wound, 2.0, col);
+            }
+            let stroke = if self.selected == Some(i) {
+                Stroke::new(2.0, BLUE)
+            } else if hovered == Some(i) {
+                Stroke::new(1.0, Color32::from_rgb(110, 180, 225))
+            } else {
+                Stroke::new(1.0, Color32::from_gray(170))
+            };
+            p.rect_stroke(r, 2.0, stroke, egui::StrokeKind::Inside);
+            if r.width() > 36.0 {
+                let icon =
+                    Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), vec2(16.0, 13.0));
+                chrome::draw_icon(&p, pattern_icon(&s.pattern), icon);
+            }
+            let label = format!("{} {}", pattern_name(&s.pattern), s.turns);
+            let galley = p.layout_no_wrap(label, FontId::proportional(11.0), chrome::INK);
+            if galley.size().x + 34.0 < r.width() {
+                p.galley(
+                    pos2(r.left() + 26.0, r.center().y - galley.size().y / 2.0),
+                    galley,
+                    chrome::INK,
+                );
+            }
+        }
+        // The marker.
+        let mx = done_x.clamp(rect.left(), rect.right());
+        p.line_segment(
+            [pos2(mx, rect.top() - 3.0), pos2(mx, rect.bottom() + 3.0)],
+            Stroke::new(2.0, Color32::from_gray(60)),
+        );
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                pos2(mx - 5.0, rect.top() - 5.0),
+                pos2(mx + 5.0, rect.top() - 5.0),
+                pos2(mx, rect.top() + 1.0),
+            ],
+            Color32::from_gray(60),
+            Stroke::NONE,
+        ));
+
+        if resp.dragged()
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            let t = t_of(p.x).round().min(total);
+            self.scrub = t;
+            self.playing = false;
+            self.follow_end = t >= total;
+        }
+        if resp.clicked() {
+            self.selected = pointer.and_then(|p| under(p.x));
+        }
+        if resp.double_clicked()
+            && let Some(i) = pointer.and_then(|p| under(p.x))
+        {
+            self.selected = Some(i);
+        }
+        if resp.secondary_clicked() {
+            self.menu_section = pointer.and_then(|p| under(p.x));
+        }
+        let resp = match hovered {
+            Some(i) => resp.on_hover_text_at_pointer(section_summary(i, &sections[i])),
+            None => resp,
+        };
+        let mut action = None;
+        let menu_section = self.menu_section;
+        resp.context_menu(|ui| {
+            if let Some(i) = menu_section {
+                ui.label(RichText::new(format!("Section {}", i + 1)).strong());
+                if let Some(a) = section_menu(ui) {
+                    action = Some((i, a));
+                }
+            } else {
+                ui.label("Right-click a section");
             }
         });
+        if let Some((i, a)) = action {
+            self.section_action(i, a);
+        }
     }
 
     fn advance_playback(&mut self, ui: &Ui) {
@@ -380,11 +1100,24 @@ impl WinderApp {
             self.scrub = total;
         }
         if !self.playing {
+            // Standing still: the spindle is where the scrubbed turn has it.
+            self.spin_phase = if self.scrub >= total {
+                0.0
+            } else {
+                self.scrub.fract()
+            };
+            self.spin_sweep = 0.0;
             return;
         }
         let rpm = self.design.speed.rpm;
         let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
-        self.scrub = (self.scrub + rpm / 60.0 * self.speedup * dt).min(total);
+        let turns_per_s = rpm / 60.0 * self.speedup;
+        let step = (turns_per_s * dt).min(total - self.scrub).max(0.0);
+        self.scrub += step;
+        // The spindle is always where the turn count has it. Faster than
+        // the screen can show, the 3D view blurs it over the angle it swept.
+        self.spin_phase = self.scrub.fract();
+        self.spin_sweep = step * std::f64::consts::TAU;
         if self.scrub >= total {
             self.playing = false;
             self.follow_end = true;
@@ -393,10 +1126,93 @@ impl WinderApp {
     }
 }
 
+/// Section menu shared by the browser and the timeline: returns 0 edit,
+/// 1 duplicate, 2 earlier, 3 later, 4 delete.
+fn section_menu(ui: &mut Ui) -> Option<u8> {
+    let mut a = None;
+    for (k, label) in ["Edit…", "Duplicate", "Move earlier", "Move later", "Delete"]
+        .iter()
+        .enumerate()
+    {
+        if k == 4 {
+            ui.separator();
+        }
+        if ui.button(*label).clicked() {
+            a = Some(k as u8);
+            ui.close();
+        }
+    }
+    a
+}
+
+fn pattern_icon(p: &Pattern) -> Icon {
+    match p {
+        Pattern::Layer { .. } => Icon::Layer,
+        Pattern::Helix { .. } => Icon::Helix,
+        Pattern::Scatter { .. } => Icon::Scatter,
+    }
+}
+
+fn pattern_color(p: &Pattern) -> Color32 {
+    match p {
+        Pattern::Layer { .. } => Color32::from_rgb(160, 205, 236),
+        Pattern::Helix { .. } => Color32::from_rgb(240, 196, 150),
+        Pattern::Scatter { .. } => Color32::from_rgb(178, 218, 164),
+    }
+}
+
+fn section_summary(i: usize, s: &winder_core::Section) -> String {
+    let how = match &s.pattern {
+        Pattern::Layer { .. } => "neat layers".to_string(),
+        Pattern::Helix { tpl } => format!("{tpl:.0} turns per sweep"),
+        Pattern::Scatter {
+            tpl_min, tpl_max, ..
+        } => {
+            format!("{tpl_min:.0}–{tpl_max:.0} turns per sweep")
+        }
+    };
+    format!(
+        "{}. {} · {} turns · {how}\nClick to open it in the panel; right-click for more",
+        i + 1,
+        pattern_name(&s.pattern),
+        s.turns
+    )
+}
+
+/// What a pattern is called in the app.
+fn pattern_name(p: &Pattern) -> &'static str {
+    match p {
+        Pattern::Layer { .. } => "Neat layers",
+        Pattern::Helix { .. } => "Machine",
+        Pattern::Scatter { .. } => "Scatter",
+    }
+}
+
+fn views_title(v: View) -> &'static str {
+    match v {
+        View::Coil3d => "3D",
+        View::CrossSection => "Cross-section",
+        View::Lay => "Lay plot",
+        View::Build => "Build profile",
+    }
+}
+
 impl eframe::App for WinderApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save(false);
+        }
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        if !typing {
+            let shift_cmd = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+            if ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+                    || i.consume_key(shift_cmd, egui::Key::Z)
+            }) {
+                self.redo();
+            } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+                self.undo();
+            }
         }
         let title = format!(
             "Pickup Winder · {}{}",
@@ -406,43 +1222,63 @@ impl eframe::App for WinderApp {
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::Title(title));
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(e) = &self.error {
-                    ui.colored_label(WARN, format!("Design problem: {e}"));
-                } else {
-                    ui.weak(&self.status);
-                }
-            });
-        });
-        egui::Panel::left("design")
-            .resizable(true)
-            .default_size(370.0)
-            .min_size(300.0)
+        let bar = |fill: Color32, margin: (i8, i8)| {
+            egui::Frame::NONE
+                .fill(fill)
+                .inner_margin(egui::Margin::symmetric(margin.0, margin.1))
+        };
+        egui::Panel::top("appbar")
+            .frame(bar(Color32::from_rgb(226, 229, 233), (8, 3)))
+            .show(ui, |ui| self.app_bar(ui));
+        egui::Panel::top("toolbar")
+            .frame(bar(Color32::WHITE, (8, 4)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
+            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .frame(bar(chrome::PANEL, (10, 3)))
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .show(ui, |ui| editor::design_form(ui, &mut self.design));
+                ui.horizontal(|ui| {
+                    if let Some(e) = &self.error {
+                        ui.colored_label(WARN, format!("Design problem: {e}"));
+                    } else {
+                        ui.label(RichText::new(&self.status).size(11.5).color(chrome::MUTED));
+                    }
+                });
             });
-        self.recompute();
-        egui::Panel::right("results")
+        egui::Panel::bottom("timeline")
+            .frame(
+                bar(Color32::from_rgb(250, 250, 251), (8, 6))
+                    .stroke(Stroke::new(1.0, Color32::from_gray(214))),
+            )
+            .show(ui, |ui| self.timeline(ui));
+        egui::Panel::left("parameters")
+            .frame(bar(chrome::PANEL, (10, 4)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
             .resizable(true)
-            .default_size(290.0)
-            .min_size(240.0)
-            .show(ui, |ui| self.results_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| {
-            self.view_toolbar(ui);
-            self.advance_playback(ui);
-            ui.separator();
-            if let Some((shown, c)) = &self.computed {
-                let upto = self.scrub.round() as usize;
-                match self.view {
-                    View::CrossSection => views::cross_section(ui, shown, c, upto, self.coloring),
-                    View::Lay => views::lay_plot(ui, shown, c, upto),
-                    View::Build => views::build_plot(ui, shown, c, upto),
-                }
-            }
-        });
+            .default_size(340.0)
+            .min_size(280.0)
+            .max_size(480.0)
+            .show(ui, |ui| self.parameters(ui));
+        egui::Panel::right("results")
+            .frame(bar(chrome::PANEL, (10, 8)).stroke(Stroke::new(1.0, Color32::from_gray(214))))
+            .resizable(false)
+            .exact_size(if self.pinned.is_some() { 310.0 } else { 250.0 })
+            .show(ui, |ui| {
+                ui.label(RichText::new("THE COIL").size(11.5).color(chrome::MUTED));
+                ui.add_space(4.0);
+                self.results(ui);
+            });
+        self.follow();
+        let settled = !ui.input(|i| i.pointer.any_down());
+        self.recompute(settled);
+        self.commit(settled);
+        if !settled {
+            ui.ctx().request_repaint();
+        }
+        self.advance_playback(ui);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| self.canvas(ui));
+
+        let ctx = ui.ctx().clone();
 
         if !self.imported.is_empty() {
             let mut pick = None;
@@ -450,7 +1286,7 @@ impl eframe::App for WinderApp {
             egui::Window::new("Imported recipes")
                 .open(&mut open)
                 .collapsible(false)
-                .show(ui.ctx(), |ui| {
+                .show(&ctx, |ui| {
                     ui.label("Pick one to load as a new, unsaved design.");
                     for (i, r) in self.imported.iter().enumerate() {
                         ui.horizontal(|ui| {
@@ -468,6 +1304,7 @@ impl eframe::App for WinderApp {
                 let r = self.imported.swap_remove(i);
                 self.design = r.design;
                 self.path = None;
+                self.prev = None;
                 self.follow_end = true;
                 self.status = format!("Imported \"{}\". Save it to keep it.", self.design.name);
                 self.imported.clear();
@@ -495,4 +1332,144 @@ fn file_stem(name: &str) -> String {
         .collect::<Vec<_>>()
         .join("-");
     if s.is_empty() { "coil".into() } else { s }
+}
+
+/// A titled group of parameters that folds away, with a summary beside the
+/// title so it says what it holds while folded.
+fn card(ui: &mut Ui, title: &str, summary: &str, open: bool, add: impl FnOnce(&mut Ui)) {
+    egui::Frame::NONE
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, Color32::from_gray(222)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let id = ui.make_persistent_id(("card", title));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open)
+                .show_header(ui, |ui| {
+                    ui.label(RichText::new(title).strong().size(13.5));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(summary).color(chrome::MUTED).size(11.5));
+                    });
+                })
+                .body(|ui| {
+                    ui.add_space(2.0);
+                    add(ui);
+                });
+        });
+    ui.add_space(6.0);
+}
+
+/// One line of the results: shown text, and the number behind it for
+/// comparing (to `decimals` places, differences under `step` are "same").
+struct Metric {
+    label: &'static str,
+    text: String,
+    value: f64,
+    decimals: usize,
+    step: f64,
+}
+
+fn metrics(d: &Design, c: &Computed) -> Vec<Metric> {
+    let l = &c.laid;
+    let m = |label, text: String, value: f64, decimals: usize| Metric {
+        label,
+        text,
+        value,
+        decimals,
+        step: 10f64.powi(-(decimals as i32)),
+    };
+    vec![
+        m("DCR", format!("{:.2} kΩ", l.dcr_kohm), l.dcr_kohm, 2),
+        m(
+            "Turns",
+            format!("{}", d.total_turns()),
+            d.total_turns() as f64,
+            0,
+        ),
+        m("Wire", format!("{:.0} m", l.length_m), l.length_m, 0),
+        m(
+            "Build, long side",
+            format!(
+                "{:.2} of {:.1} mm",
+                l.side_build_mm, d.bobbin.build_depth_mm
+            ),
+            l.side_build_mm,
+            2,
+        ),
+        m(
+            "Build, short end",
+            format!("{:.2} mm", l.end_build_mm),
+            l.end_build_mm,
+            2,
+        ),
+        m(
+            "Fill factor",
+            format!("{:.0} %", l.fill_factor * 100.0),
+            l.fill_factor * 100.0,
+            0,
+        ),
+        m(
+            "Inductance",
+            format!("{:.2} H", l.inductance_h),
+            l.inductance_h,
+            2,
+        ),
+        m(
+            "Self-capacitance",
+            format!("{:.0} pF", l.cap_pf),
+            l.cap_pf,
+            0,
+        ),
+        m(
+            "Resonant peak",
+            format!("{:.1} kHz", l.resonance_khz),
+            l.resonance_khz,
+            1,
+        ),
+        m("Q", format!("{:.1}", l.q_factor), l.q_factor, 1),
+        m(
+            "DCR, layer model",
+            format!("{:.2} kΩ", c.estimate.dcr_kohm),
+            c.estimate.dcr_kohm,
+            2,
+        ),
+        m(
+            "Passes",
+            format!("{}", c.stats.passes),
+            c.stats.passes as f64,
+            0,
+        ),
+        m(
+            "Run time",
+            format!("{:.1} min", c.stats.minutes),
+            c.stats.minutes,
+            1,
+        ),
+    ]
+}
+
+fn preset_label(p: &str) -> &'static str {
+    match p {
+        "strat" => "Strat",
+        "tele-bridge" => "Tele bridge",
+        "tele-neck" => "Tele neck",
+        "paf" => "Humbucker",
+        "p90" => "P-90",
+        _ => "Other",
+    }
+}
+
+fn preset_hint(p: &str) -> String {
+    match Design::pickup(p) {
+        Some(d) => format!(
+            "{}: {} turns of {}, scatter wound, on a {:.1} × {:.1} mm core",
+            d.name,
+            d.total_turns(),
+            d.wire_spec().map(|w| w.name).unwrap_or_default(),
+            d.bobbin.core_length_mm,
+            d.bobbin.core_width_mm
+        ),
+        None => String::new(),
+    }
 }

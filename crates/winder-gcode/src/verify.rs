@@ -326,7 +326,7 @@ mod tests {
         let profile = MachineProfile::default();
         let g = post_grbl(&d, &tp, &profile)
             .unwrap()
-            .replacen("G1 X1 Y0.1065", "G1 X1 Y11.5", 1);
+            .replacen("G1 X1 Y0.0355", "G1 X1 Y11.5", 1);
         assert!(matches!(
             verify(&g, &d, &tp, &profile),
             Err(VerifyError::OutsideWindow { .. })

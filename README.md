@@ -77,24 +77,112 @@ designs/         example designs
 ### Design editor
 
 ```bash
-cargo run --release -p winder-app -- designs/strat-vintage.toml
+cargo run --release -p winder-app                               # a new Strat design
+cargo run --release -p winder-app -- designs/strat-vintage.toml # or open a file
 ```
 
-Edit the bobbin, wire, speed and the stack of winding sections on the left.
-The middle shows the result, recomputed as you type:
+The buttons at the top of the panel start from a kind of pickup (Strat,
+Tele bridge, Tele neck, Humbucker, P-90) with its real bobbin, wire and
+usual turns. Every parameter sits in the panel on the left, grouped into cards
+(Winding, Bobbin, Wire, Speed, Rules, Wire path, Estimate inputs, Notes).
+Edits change the coil straight away, and Ctrl+Z / Ctrl+Y (or the Undo and
+Redo buttons) step back and forward. What the coil measures is on the right.
+The toolbar picks the view (3D, Section, Lay, Build) and makes the G-code
+or loads a machine profile. The **timeline** along the bottom shows the
+wind; drag it to scrub, and play it back at 0.1× to 1000× the real speed.
+The spindle turns exactly with the turn count; when it turns faster than
+a screen can show (above about 20 turns a second), it is drawn blurred, as
+a camera would see it.
 
-- **Cross-section**: every turn where it lands, coloured by turn order or by
-  section. Hover a wire to see its turn number. Each turn drops into the
-  lowest groove near the guide, so a layer pattern nests and scatter piles up
-  the way the toolpath sends it.
-- **Lay plot**: guide position against turn number, with section bands and
-  stop points.
+Any number field takes a formula: click it, type `side * 0.6` or
+`5.8 * 1.05` and press Enter. Names stand for the design as it is then:
+`channel`, `core_w`, `core_l`, `depth`, `od` (wire with insulation),
+`side` (turns side by side across the channel), `turns`, `rpm` and `pi`,
+with `+ - * / ^ ( )` and `sqrt`, `round`, `floor`, `ceil`, `abs`, `min`,
+`max`. **Pin as A** (under the results) keeps the current numbers; change
+anything and each line shows how far you are from A, and *Back to A* puts
+it back. In the **Lay** view, scroll to zoom into a few passes (or press
+*Zoom to the marker*): each turn shows as a dot, so you can see scatter's
+hand wander bunch and spread the turns where a helix lays them evenly.
+
+**Winding** is one choice: how the guide lays the wire (perfect layers, a
+helix or scatter) and how much to wind, as a number of turns or as a
+resistance to reach. That is all most pickups need. Under *Advanced* you can
+add a few perfect layers under or over the scatter, as some winders do to
+seat the wire and finish neatly; the winding is then a list of **sections**
+wound one after another, shown under the Winding node, and *Make it one
+winding* folds them back together.
+
+**Bobbin** can be set to anything: the kind (Strat, Tele bridge or neck,
+humbucker, P-90 or plain), the channel, the core's width, length and corner
+radius, the flanges' size, corner and thickness, and the poles' count,
+spread, diameter and height. Flange and pole sizes follow the kind and the
+core until you set them (they show *auto*), and *Reset to kind defaults*
+puts them back. Only the channel, the core and the build depth change how
+the wire lays; the rest is how the bobbin looks on the machine.
+
+The design follows your changes (**Targets and rules** in the Browser):
+
+- **Keep the lay** is on by default. Change the wire gauge, the channel or a
+  section's insets, and each section keeps its pitch in wire diameters
+  (its turns per pass are scaled). Each perfect-layer section keeps its
+  number of layers.
+- **Target DCR**: set the resistance you want. The fill section (the
+  biggest one, or one you pick) gets the turns that reach it on the laid
+  coil, and they are worked out again after every change. The other
+  sections keep their turns. The CLI does the same when it loads the
+  design.
+
+```toml
+[auto]
+target_dcr_kohm = 6.0
+fill_section = 2   # optional; default is the biggest section
+```
+
+- **3D** (the default) shows the bobbin as it really is, mounted on the
+  winder. Strat and Tele bobbins are fibre flatwork on six rod magnets
+  (staggered on the Strat), with the lead eyelets. Humbucker and P-90
+  bobbins are moulded, with pole screws. The bobbin sits on the spindle's
+  platen above the stepper and turns as it winds. Beside it the traverse
+  rail carries the guide arm and its ceramic eyelet. The wire runs from the
+  eyelet to the coil on a tangent, as it does on a real winder. Every turn
+  is drawn as round copper wire, exactly where the lay model put it.
+  Navigation works as in Fusion:
+  - Scroll zooms at the pointer, right down onto single wires.
+  - Middle-drag pans and Shift + middle-drag orbits.
+  - Left-drag does whatever the navigation bar has picked: Orbit, Pan or
+    Zoom.
+  - The bar also has Fit (or double-click), Home, perspective or
+    orthographic, the top flange on or off, and the machine on or off.
+
+  The **ViewCube** works like Autodesk's. Click any of its 26 faces, edges
+  or corners to swing to that view, or drag the cube to orbit. Drag the
+  compass ring to turn about the bobbin's axis, and click the house to go
+  home. Looking straight at a face, arrows step to the next face over.
+  While playing, the newest turns glow and the guide is shown with the free
+  wire running to the coil.
+- **Cross-section**: every turn where it lands, cut through the middle of a
+  long side or through a short end, coloured by turn order or by section.
+  Hover a wire to see its turn number. Wire is pressed into its grooves on
+  the short ends and spans straight across the long sides, so crossed
+  patterns bulge there, as real coils do.
+- **Lay plot**: guide position against turn number, and where the wire
+  actually landed (it lags the guide), with section bands and stop points.
 - **Build profile**: the top of the coil across the channel, against the
   bobbin's build limit.
 
-Scrub or play the wind (1× to 1000× real speed). The right panel shows DCR
-both from the actual lay and from the layer model, wire length, build,
-inductance, capacitance, resonance and run time. **Export G-code** bakes the
+Sections are set the way real winders are, by **turns per pass**: `layer`
+(perfect layers, the guide steps one wire per turn), `helix` (a fixed
+traverse ratio, like a geared or cam machine: every pass a steady sweep)
+and `scatter` (as by hand: a new turns per pass and reversal point for
+every pass, and with `speed_wander` the guide hurries and slows within the
+pass, so turns spread out in places and bunch up in others). See
+[docs/WINDING_MODEL.md](docs/WINDING_MODEL.md) for how the lay is worked
+out and what it was checked against.
+
+Properties shows what the laid coil measures: DCR, wire length, build on the long side and short
+end, fill factor, inductance, self-capacitance, resonance and Q, plus the
+layer model's DCR as a cross-check, and run time. **MAKE › G-code** bakes the
 program, reads it back to check it, then saves it. The File menu opens and
 saves designs (Ctrl+S), imports the Python app's recipes and loads a machine
 profile.
@@ -115,8 +203,9 @@ cargo test
 
 How the G-code drives the machine: X is the spindle measured in turns
 (`$100` = steps per revolution, 1600 at 1/8 step), Y is the traverse in mm
-(`$101` = 200 for a T8 with 8 mm lead). Every `G1` line lays one turn as a
-helix, and `G93` inverse-time feed makes each line's duration, and so the
+(`$101` = 200 for a T8 with 8 mm lead). Every `G1` line lays at most one
+turn (a perfect layer uses two: the step, then the hold), and `G93`
+inverse-time feed makes each line's duration, and so the
 RPM, exact. The program finds the traverse switch with `G38.2` on GRBL's
 probe input, then measures from there (`flange_offset_mm` in the machine
 profile). Every generated file is parsed back and checked: turn count,
