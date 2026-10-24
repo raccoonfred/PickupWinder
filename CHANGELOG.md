@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Rust port, milestone 1: design core, G-code and CLI.** A Cargo workspace
+  (`winder-core`, `winder-gcode`, `winder-cli`). Coils are TOML design files:
+  bobbin, wire, speed/ramps, and an ordered list of winding sections, each
+  with a Layer or seeded Scatter pattern, lay-window insets, dwell turns at
+  reversals and optional stop points (e.g. for a tap). The coil physics is
+  ported from `simulate_coil` and pinned to its validated numbers. One
+  toolpath feeds both the estimate and a GRBL 1.1 post-processor (spindle =
+  X in turns, traverse = Y in mm, `G93` inverse-time feed, `G38.2` traverse
+  homing); every program is read back and verified. `winder import-recipes`
+  converts the Python app's recipes and lists what could not carry over.
+
 ### Changed
 - **DCR simulator rebuilt on real winding physics (layer-by-layer).** The
   previous model used a single average turn length, which got one DCR

@@ -1,0 +1,31 @@
+# PAF-style humbucker coil with a tap at 4,000 turns.
+version = 1
+name = "PAF coil, tapped"
+wire = "42 AWG"
+direction = "cw"
+
+[bobbin]
+channel_height_mm = 6.5
+core_width_mm = 16.0
+core_length_mm = 52.0
+build_depth_mm = 11.0
+
+[speed]
+rpm = 450
+ramp_turns = 50
+ramp_start_rpm = 60
+
+[estimate]
+scatter = 15
+temp_c = 20
+
+[[sections]]
+turns = 4000
+pattern = { kind = "scatter", pitch_min_od = 1.1, pitch_max_od = 1.6, inset_max_mm = 0.2, seed = 77 }
+stop_after = "Solder the tap lead, then resume"
+
+[[sections]]
+turns = 1250
+pattern = { kind = "scatter", pitch_min_od = 1.1, pitch_max_od = 1.6, inset_max_mm = 0.2, seed = 78 }
+inset_start_mm = 0.3       # keep the last turns off the flanges
+inset_end_mm = 0.3
