@@ -292,7 +292,14 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
     let outline = rounded_rect(flange_len, flange_wid, flange_r);
     let fibre = matches!(b.style, Style::Strat | Style::TeleBridge | Style::TeleNeck);
     let body = if fibre { FIBRE } else { PLASTIC };
-    spin.prism(&outline, -t_bottom, 0.0, body);
+    // A Tele bridge sits on a wider bottom plate than its top (about 72 by
+    // 38 mm over its three mounting ears), so it seats in the bridge.
+    let bottom = if b.style == Style::TeleBridge {
+        rounded_rect(flange_len, flange_wid.max(26.0), 5.0)
+    } else {
+        outline.clone()
+    };
+    spin.prism(&bottom, -t_bottom, 0.0, body);
     top.prism(&outline, h, h + t_top, body);
     let mut length = flange_len;
 
@@ -321,16 +328,18 @@ pub fn build(b: &Bobbin, build_mm: f32, free_span: f32) -> Parts {
                 spin.cylinder(x, ez, 0.45, -t_bottom - 0.25, 0.3, HOLE);
             }
             if b.style == Style::TeleBridge {
-                // Three mounting ears on the bottom plate.
+                // Three mounting ears: one at the neck end, two splayed at
+                // the bridge end.
+                let half = flange_wid.max(26.0) / 2.0;
                 for (x, z) in [
-                    (-flange_len / 2.0 - 1.5, 0.0),
-                    (flange_len / 2.0 + 1.5, flange_wid * 0.18),
-                    (flange_len / 2.0 + 1.5, -flange_wid * 0.18),
+                    (-flange_len / 2.0 - 1.0, 0.0),
+                    (flange_len / 2.0 - 5.0, half + 1.5),
+                    (flange_len / 2.0 - 5.0, -half - 1.5),
                 ] {
                     spin.cylinder(x, z, 4.0, -t_bottom, 0.0, FIBRE);
                     spin.cylinder(x, z, 1.4, -t_bottom - 0.05, 0.05, HOLE);
                 }
-                length += 11.0;
+                length += 5.0;
             }
         }
         Style::Humbucker | Style::P90 => {
