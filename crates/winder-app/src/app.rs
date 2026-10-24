@@ -828,7 +828,14 @@ impl WinderApp {
             c.cross.end_station()
         };
         if self.view == View::Coil3d {
-            view3d::coil_3d(ui, shown, c, upto, &mut self.camera, self.renderer.as_ref());
+            view3d::coil_3d(
+                ui,
+                shown,
+                c,
+                self.scrub,
+                &mut self.camera,
+                self.renderer.as_ref(),
+            );
             return;
         }
         // The flat views get a white sheet with their options along the top,

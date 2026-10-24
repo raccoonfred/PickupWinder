@@ -7,10 +7,12 @@ wire = "42 AWG"
 direction = "cw"
 
 [bobbin]
-channel_height_mm = 6.5
-core_width_mm = 16.0
-core_length_mm = 52.0
-build_depth_mm = 11.0
+channel_height_mm = 6.3
+core_width_mm = 6.5
+core_length_mm = 56.5
+build_depth_mm = 5.5
+corner_radius_mm = 3.25
+style = "humbucker"
 
 [speed]
 rpm = 450

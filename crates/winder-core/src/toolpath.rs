@@ -213,7 +213,7 @@ pub fn generate(design: &Design) -> Result<Toolpath, DesignError> {
         match section.pattern {
             Pattern::Layer { step_fraction } => {
                 let f = step_fraction
-                    .unwrap_or(design.bobbin.core_width_mm / design.bobbin.core_perimeter_mm());
+                    .unwrap_or(design.bobbin.end_mm() / design.bobbin.core_perimeter_mm());
                 layered(&mut cur, si, section, od, channel, f, rpm, section_start);
             }
             Pattern::Helix { .. } | Pattern::Scatter { .. } => {
@@ -406,7 +406,7 @@ mod tests {
         let tp = generate(&d).unwrap();
         let od: f64 = 0.071;
         let per_layer = ((11.0 - od) / od + 0.5).floor();
-        let f = 16.0 / 124.0;
+        let f = d.bobbin.end_mm() / d.bobbin.core_perimeter_mm();
         let moves: Vec<_> = tp.moves().collect();
         // Turn 1 sits at the edge; every later turn is a step then a hold.
         assert_eq!(moves[0].turns, 1.0);

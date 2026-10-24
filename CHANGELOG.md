@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     coil to reach it, by the editor and by the CLI.
 
 ### Changed
+- **Real bobbins and a real winder in 3D.**
+  - The bobbin presets now have real sizes. Single coils wind onto six rod
+    magnets: a Strat core is 56.9 × 4.9 mm with round ends. A PAF core is
+    56.5 × 6.5 mm with 6.3 mm between the flanges.
+  - New `corner_radius_mm` and `style` bobbin fields. With them the model
+    uses the true perimeter, and the 3D view draws fibre flatwork with
+    magnets and eyelets, or a moulded humbucker or P-90 bobbin.
+  - The bobbin is mounted on the spindle's platen over the stepper and
+    spins as it winds. The guide eyelet rides a traverse rail, and the wire
+    reaches the coil on a tangent from it.
+  - Files without the new fields keep the old square-cornered core.
 - **The editor now looks and moves like Fusion 360.** It has a light theme,
   a toolbar of CREATE / INSPECT / MAKE groups and a floating Browser. Edit
   dialogs have OK and Cancel. The timeline shows the sections sized by

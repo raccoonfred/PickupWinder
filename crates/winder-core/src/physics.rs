@@ -203,6 +203,8 @@ mod tests {
             core_width_mm: w,
             core_length_mm: l,
             build_depth_mm: 6.0,
+            corner_radius_mm: 0.0,
+            style: Default::default(),
         }
     }
 

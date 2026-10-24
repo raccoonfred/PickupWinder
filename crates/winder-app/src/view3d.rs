@@ -7,7 +7,7 @@
 //! scatter show the way they do on a wound bobbin. The wire is a ribbon
 //! turned to face the camera and shaded as a round wire.
 
-use crate::model::Computed;
+use crate::{machine, model::Computed};
 use eframe::{
     egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2},
     egui_glow,
@@ -37,6 +37,8 @@ pub struct Camera {
     pub pan: Vec2,
     pub top_flange: bool,
     pub perspective: bool,
+    /// Show the winder: spindle, motor, traverse and guide.
+    pub machine: bool,
     pub tool: Tool,
     anim: Option<Anim>,
 }
@@ -70,6 +72,7 @@ impl Default for Camera {
             pan: Vec2::ZERO,
             top_flange: true,
             perspective: true,
+            machine: true,
             tool: Tool::Orbit,
             anim: None,
         }
@@ -183,8 +186,6 @@ fn wrap_angle(a: f32) -> f32 {
 
 /// Points per turn along the wire.
 const SAMPLES: usize = 40;
-/// Flatwork thickness (mm), as on a Fender-style bobbin.
-const FLANGE_MM: f32 = 1.6;
 
 /// The core outline: a rounded rectangle, walked from where the wire runs
 /// onto the first short end, as the lay model's stations are.
@@ -196,9 +197,9 @@ struct Core {
 }
 
 impl Core {
-    fn new(width: f32, length: f32) -> Core {
+    fn new(width: f32, length: f32, r: f32) -> Core {
         let (a, b) = (length / 2.0, width / 2.0);
-        let r = (width.min(length) * 0.3).max(0.5);
+        let r = r.clamp(0.05, width.min(length) / 2.0);
         let corners = [
             ([a - r, b - r], 0.0f32),
             ([-a + r, b - r], 90.0),
@@ -253,9 +254,8 @@ impl Core {
 pub struct Geometry {
     /// Wire: per vertex pos(3) tangent(3) normal(3) side(1) turn(1).
     wire: Vec<f32>,
-    /// Bobbin, opaque, then the top flange: pos(3) normal(3) rgba(4).
-    solid: Vec<f32>,
-    top: Vec<f32>,
+    /// Solids, pos(3) normal(3) rgba(4), split by how they move.
+    parts: machine::Parts,
     turns: usize,
     od: f32,
     channel: f32,
@@ -263,168 +263,100 @@ pub struct Geometry {
 }
 
 const WIRE_STRIDE: usize = 11;
-const SOLID_STRIDE: usize = 10;
+const SOLID_STRIDE: usize = machine::STRIDE;
+
+/// Where turn `n` (0-based) lies at share `u` of the way round: (y, z),
+/// between the lay model's stations.
+fn lay_at(cross: &winder_core::CrossSection, n: usize, u: f32) -> (f32, f32) {
+    let turns = cross.turn_count();
+    let s_n = cross.stations.len();
+    let pos = u * s_n as f32 - 0.5;
+    let mut n0 = n as i64;
+    let mut j0 = pos.floor() as i64;
+    if j0 < 0 {
+        j0 += s_n as i64;
+        n0 -= 1;
+    }
+    let (mut n1, mut j1) = (n0, j0 + 1);
+    if j1 >= s_n as i64 {
+        j1 -= s_n as i64;
+        n1 += 1;
+    }
+    let clamp = |k: i64| k.clamp(0, turns as i64 - 1) as usize;
+    let f = (pos - pos.floor()) as f64;
+    let a = cross.cuts[j0 as usize][clamp(n0)];
+    let q = cross.cuts[j1 as usize][clamp(n1)];
+    (
+        (a.y_mm + (q.y_mm - a.y_mm) * f) as f32,
+        (a.z_mm + (q.z_mm - a.z_mm) * f) as f32,
+    )
+}
+
+fn core_of(d: &Design) -> Core {
+    let b = &d.bobbin;
+    Core::new(
+        b.core_width_mm as f32,
+        b.core_length_mm as f32,
+        b.corner_r() as f32,
+    )
+}
 
 impl Geometry {
     pub fn build(d: &Design, c: &Computed) -> Geometry {
         let b = &d.bobbin;
-        let (w, l, h) = (
-            b.core_width_mm as f32,
-            b.core_length_mm as f32,
-            b.channel_height_mm as f32,
-        );
-        let core = Core::new(w, l);
+        let h = b.channel_height_mm as f32;
+        let core = core_of(d);
         let cross = &c.cross;
         let turns = cross.turn_count();
-        let s_n = cross.stations.len();
 
-        // Position of turn n (0-based) at share u, between the stations.
-        let turn_at = |n: usize, u: f32| -> (f32, f32) {
-            let pos = u * s_n as f32 - 0.5;
-            let mut n0 = n as i64;
-            let mut j0 = pos.floor() as i64;
-            if j0 < 0 {
-                j0 += s_n as i64;
-                n0 -= 1;
-            }
-            let (mut n1, mut j1) = (n0, j0 + 1);
-            if j1 >= s_n as i64 {
-                j1 -= s_n as i64;
-                n1 += 1;
-            }
-            let clamp = |k: i64| k.clamp(0, turns as i64 - 1) as usize;
-            let f = (pos - pos.floor()) as f64;
-            let a = cross.cuts[j0 as usize][clamp(n0)];
-            let q = cross.cuts[j1 as usize][clamp(n1)];
-            (
-                (a.y_mm + (q.y_mm - a.y_mm) * f) as f32,
-                (a.z_mm + (q.z_mm - a.z_mm) * f) as f32,
-            )
-        };
         let mut pts: Vec<([f32; 3], [f32; 3], f32)> = Vec::with_capacity(turns * SAMPLES + 1);
         for n in 0..turns {
             for s in 0..SAMPLES {
                 let u = s as f32 / SAMPLES as f32;
-                let (y, z) = turn_at(n, u);
+                let (y, z) = lay_at(cross, n, u);
                 let (p, nn) = core.at(u, z);
                 pts.push(([p[0], y, p[1]], [nn[0], 0.0, nn[1]], n as f32 + u));
             }
         }
         if turns > 0 {
-            let (y, z) = turn_at(turns - 1, 0.9999);
+            let (y, z) = lay_at(cross, turns - 1, 0.9999);
             let (p, nn) = core.at(0.9999, z);
             pts.push(([p[0], y, p[1]], [nn[0], 0.0, nn[1]], turns as f32));
         }
         let mut wire = Vec::with_capacity(pts.len() * 2 * WIRE_STRIDE);
-        for i in 0..pts.len() {
-            let a = pts[i.saturating_sub(1)].0;
-            let q = pts[(i + 1).min(pts.len() - 1)].0;
-            let t = [q[0] - a[0], q[1] - a[1], q[2] - a[2]];
-            let (p, nn, turn) = pts[i];
-            for side in [-1.0f32, 1.0] {
-                wire.extend_from_slice(&p);
-                wire.extend_from_slice(&t);
-                wire.extend_from_slice(&nn);
-                wire.push(side);
-                wire.push(turn);
-            }
-        }
+        strip(&mut wire, &pts);
 
-        // Bobbin: core wall and two flatwork plates.
-        let mut solid = Vec::new();
-        let mut top = Vec::new();
-        let ring = 96;
-        let core_col = [0.55, 0.55, 0.58, 1.0];
-        for i in 0..ring {
-            let (u0, u1) = (i as f32 / ring as f32, (i + 1) as f32 / ring as f32);
-            let (p0, n0) = core.at(u0, 0.0);
-            let (p1, n1) = core.at(u1, 0.0);
-            let v = |p: [f32; 2], n: [f32; 2], y: f32| ([p[0], y, p[1]], [n[0], 0.0, n[1]]);
-            tri(
-                &mut solid,
-                [v(p0, n0, 0.0), v(p1, n1, 0.0), v(p1, n1, h)],
-                core_col,
-            );
-            tri(
-                &mut solid,
-                [v(p0, n0, 0.0), v(p1, n1, h), v(p0, n0, h)],
-                core_col,
-            );
-        }
-        let reach = (b.build_depth_mm as f32).max(c.laid.build_mm as f32) + 1.5;
-        let fiber = [0.13, 0.13, 0.14, 1.0];
-        plate(&mut solid, &core, -FLANGE_MM, 0.0, reach, fiber);
-        plate(
-            &mut top,
-            &core,
-            h,
-            h + FLANGE_MM,
-            reach,
-            [0.13, 0.13, 0.14, 0.35],
+        let parts = machine::build(
+            b,
+            c.laid.build_mm as f32,
+            d.lay.free_span_mm.max(5.0) as f32,
         );
-
         Geometry {
             wire,
-            solid,
-            top,
             turns,
             od: c.cross.od_mm as f32,
             channel: h,
-            span_mm: (l + 2.0 * reach).max(h * 1.6),
+            // Fit the bobbin and the guide beside it.
+            span_mm: (parts.length + 8.0).max(2.0 * parts.guide_r + 20.0),
+            parts,
         }
     }
 }
 
-type V = ([f32; 3], [f32; 3]);
-
-fn tri(out: &mut Vec<f32>, v: [V; 3], col: [f32; 4]) {
-    for (p, n) in v {
-        out.extend_from_slice(&p);
-        out.extend_from_slice(&n);
-        out.extend_from_slice(&col);
-    }
-}
-
-/// A flatwork plate from `y0` to `y1`, reaching `reach` mm beyond the core.
-fn plate(out: &mut Vec<f32>, core: &Core, y0: f32, y1: f32, reach: f32, col: [f32; 4]) {
-    let ring = 96;
-    let up = [0.0, 1.0, 0.0];
-    let down = [0.0, -1.0, 0.0];
-    for i in 0..ring {
-        let (u0, u1) = (i as f32 / ring as f32, (i + 1) as f32 / ring as f32);
-        let (o0, n0) = core.at(u0, reach);
-        let (o1, n1) = core.at(u1, reach);
-        for (y, n) in [(y1, up), (y0, down)] {
-            tri(
-                out,
-                [
-                    ([0.0, y, 0.0], n),
-                    ([o0[0], y, o0[1]], n),
-                    ([o1[0], y, o1[1]], n),
-                ],
-                col,
-            );
+/// Wire vertices for a run of points: two per point, either side.
+fn strip(out: &mut Vec<f32>, pts: &[([f32; 3], [f32; 3], f32)]) {
+    for i in 0..pts.len() {
+        let a = pts[i.saturating_sub(1)].0;
+        let q = pts[(i + 1).min(pts.len() - 1)].0;
+        let t = [q[0] - a[0], q[1] - a[1], q[2] - a[2]];
+        let (p, nn, turn) = pts[i];
+        for side in [-1.0f32, 1.0] {
+            out.extend_from_slice(&p);
+            out.extend_from_slice(&t);
+            out.extend_from_slice(&nn);
+            out.push(side);
+            out.push(turn);
         }
-        let s0 = [n0[0], 0.0, n0[1]];
-        let s1 = [n1[0], 0.0, n1[1]];
-        tri(
-            out,
-            [
-                ([o0[0], y0, o0[1]], s0),
-                ([o1[0], y0, o1[1]], s1),
-                ([o1[0], y1, o1[1]], s1),
-            ],
-            col,
-        );
-        tri(
-            out,
-            [
-                ([o0[0], y0, o0[1]], s0),
-                ([o1[0], y1, o1[1]], s1),
-                ([o0[0], y1, o0[1]], s0),
-            ],
-            col,
-        );
     }
 }
 
@@ -552,24 +484,32 @@ impl View {
 pub struct Renderer {
     wire_prog: glow::Program,
     solid_prog: glow::Program,
-    wire_vao: glow::VertexArray,
-    wire_vbo: glow::Buffer,
-    solid_vao: glow::VertexArray,
-    solid_vbo: glow::Buffer,
-    top_vao: glow::VertexArray,
-    top_vbo: glow::Buffer,
-    wire_points: usize,
-    solid_verts: usize,
-    top_verts: usize,
+    wire: Buf,
+    /// The free wire from the guide's eyelet to the coil, rebuilt each frame.
+    free: Buf,
+    spin: Buf,
+    top: Buf,
+    still: Buf,
+    carriage: Buf,
     pending: Option<Geometry>,
     od: f32,
     turns: usize,
     channel: f32,
     span_mm: f32,
+    guide_r: f32,
+    guide_angle: f32,
+}
+
+/// One vertex array and its buffer, and how many vertices it holds.
+struct Buf {
+    vao: glow::VertexArray,
+    vbo: glow::Buffer,
+    count: usize,
 }
 
 const WIRE_VS: &str = r#"
 uniform mat4 u_mvp;
+uniform mat4 u_model;
 uniform vec3 u_to_eye;
 uniform vec3 u_eye;
 uniform float u_persp;
@@ -585,14 +525,16 @@ out vec3 v_to_eye;
 out float v_side;
 out float v_turn;
 void main() {
-    vec3 e = u_persp > 0.5 ? normalize(u_eye - a_pos) : u_to_eye;
-    vec3 s = cross(a_tan, e);
+    vec3 pos = (u_model * vec4(a_pos, 1.0)).xyz;
+    vec3 tan = mat3(u_model) * a_tan;
+    vec3 e = u_persp > 0.5 ? normalize(u_eye - pos) : u_to_eye;
+    vec3 s = cross(tan, e);
     float l = length(s);
     s = l > 1e-6 ? s / l : vec3(0.0, 1.0, 0.0);
-    vec3 p = a_pos + s * a_side * u_radius;
+    vec3 p = pos + s * a_side * u_radius;
     gl_Position = u_mvp * vec4(p, 1.0);
     v_side_dir = s;
-    v_nrm = a_nrm;
+    v_nrm = mat3(u_model) * a_nrm;
     v_to_eye = e;
     v_side = a_side;
     v_turn = a_turn;
@@ -633,14 +575,18 @@ void main() {
 
 const SOLID_VS: &str = r#"
 uniform mat4 u_mvp;
+uniform mat4 u_model;
 in vec3 a_pos;
 in vec3 a_nrm;
 in vec4 a_col;
 out vec3 v_nrm;
+out vec3 v_pos;
 out vec4 v_col;
 void main() {
-    gl_Position = u_mvp * vec4(a_pos, 1.0);
-    v_nrm = a_nrm;
+    vec3 pos = (u_model * vec4(a_pos, 1.0)).xyz;
+    gl_Position = u_mvp * vec4(pos, 1.0);
+    v_nrm = mat3(u_model) * a_nrm;
+    v_pos = pos;
     v_col = a_col;
 }
 "#;
@@ -648,12 +594,23 @@ void main() {
 const SOLID_FS: &str = r#"
 precision mediump float;
 uniform vec3 u_light;
+uniform vec3 u_to_eye;
+uniform vec3 u_eye;
+uniform float u_persp;
 in vec3 v_nrm;
+in vec3 v_pos;
 in vec4 v_col;
 out vec4 out_color;
 void main() {
-    float d = abs(dot(normalize(v_nrm), u_light));
-    out_color = vec4(v_col.rgb * (0.4 + 0.6 * d), v_col.a);
+    vec3 n = normalize(v_nrm);
+    vec3 e = u_persp > 0.5 ? normalize(u_eye - v_pos) : u_to_eye;
+    if (dot(n, e) < 0.0) n = -n;
+    float d = max(dot(n, u_light), 0.0);
+    // A little sheen so metal parts read as metal.
+    float spec = pow(max(dot(n, normalize(u_light + e)), 0.0), 30.0);
+    float shine = smoothstep(0.35, 0.8, dot(v_col.rgb, vec3(0.333)));
+    vec3 col = v_col.rgb * (0.38 + 0.62 * d) + vec3(spec * (0.08 + 0.4 * shine));
+    out_color = vec4(col, v_col.a);
 }
 "#;
 
@@ -703,19 +660,37 @@ unsafe fn attributes(gl: &glow::Context, prog: glow::Program, names: &[(&str, i3
     }
 }
 
+/// Column-major matrix: turn by `theta` about the spindle (y), then lift
+/// by `lift`.
+fn model(theta: f32, lift: f32) -> [f32; 16] {
+    let (s, c) = theta.sin_cos();
+    [
+        c, 0.0, s, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        -s, 0.0, c, 0.0, //
+        0.0, lift, 0.0, 1.0,
+    ]
+}
+
+/// `p` turned by `theta` about the spindle, as `model` does.
+fn spun(p: [f32; 3], theta: f32) -> [f32; 3] {
+    let (s, c) = theta.sin_cos();
+    [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c]
+}
+
 impl Renderer {
     pub fn new(gl: &glow::Context) -> Result<Renderer, String> {
         unsafe {
             let wire_prog = program(gl, WIRE_VS, WIRE_FS)?;
             let solid_prog = program(gl, SOLID_VS, SOLID_FS)?;
-            let make = |prog, names: &[(&str, i32)]| -> Result<_, String> {
+            let make = |prog, names: &[(&str, i32)]| -> Result<Buf, String> {
                 let vao = gl.create_vertex_array()?;
                 let vbo = gl.create_buffer()?;
                 gl.bind_vertex_array(Some(vao));
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
                 attributes(gl, prog, names);
                 gl.bind_vertex_array(None);
-                Ok((vao, vbo))
+                Ok(Buf { vao, vbo, count: 0 })
             };
             let wire_layout = [
                 ("a_pos", 3),
@@ -725,26 +700,22 @@ impl Renderer {
                 ("a_turn", 1),
             ];
             let solid_layout = [("a_pos", 3), ("a_nrm", 3), ("a_col", 4)];
-            let (wire_vao, wire_vbo) = make(wire_prog, &wire_layout)?;
-            let (solid_vao, solid_vbo) = make(solid_prog, &solid_layout)?;
-            let (top_vao, top_vbo) = make(solid_prog, &solid_layout)?;
             Ok(Renderer {
+                wire: make(wire_prog, &wire_layout)?,
+                free: make(wire_prog, &wire_layout)?,
+                spin: make(solid_prog, &solid_layout)?,
+                top: make(solid_prog, &solid_layout)?,
+                still: make(solid_prog, &solid_layout)?,
+                carriage: make(solid_prog, &solid_layout)?,
                 wire_prog,
                 solid_prog,
-                wire_vao,
-                wire_vbo,
-                solid_vao,
-                solid_vbo,
-                top_vao,
-                top_vbo,
-                wire_points: 0,
-                solid_verts: 0,
-                top_verts: 0,
                 pending: None,
                 od: 0.07,
                 turns: 0,
                 channel: 10.0,
                 span_mm: 60.0,
+                guide_r: 50.0,
+                guide_angle: 0.0,
             })
         }
     }
@@ -755,7 +726,19 @@ impl Renderer {
         self.turns = g.turns;
         self.channel = g.channel;
         self.span_mm = g.span_mm;
+        self.guide_r = g.parts.guide_r;
+        self.guide_angle = g.parts.guide_angle;
         self.pending = Some(g);
+    }
+
+    unsafe fn fill(gl: &glow::Context, b: &mut Buf, data: &[f32], stride: usize, usage: u32) {
+        unsafe {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(b.vbo));
+            let bytes = std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, usage);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+        b.count = data.len() / stride;
     }
 
     unsafe fn upload(&mut self, gl: &glow::Context) {
@@ -763,25 +746,25 @@ impl Renderer {
             return;
         };
         unsafe {
-            for (vbo, data) in [
-                (self.wire_vbo, &g.wire),
-                (self.solid_vbo, &g.solid),
-                (self.top_vbo, &g.top),
-            ] {
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-                let bytes = std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4);
-                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
-            }
-            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            let s = glow::STATIC_DRAW;
+            Self::fill(gl, &mut self.wire, &g.wire, WIRE_STRIDE * 2, s);
+            Self::fill(gl, &mut self.spin, &g.parts.spin.0, SOLID_STRIDE, s);
+            Self::fill(gl, &mut self.top, &g.parts.top.0, SOLID_STRIDE, s);
+            Self::fill(gl, &mut self.still, &g.parts.still.0, SOLID_STRIDE, s);
+            Self::fill(gl, &mut self.carriage, &g.parts.carriage.0, SOLID_STRIDE, s);
         }
-        self.wire_points = g.wire.len() / WIRE_STRIDE / 2;
-        self.solid_verts = g.solid.len() / SOLID_STRIDE;
-        self.top_verts = g.top.len() / SOLID_STRIDE;
     }
 
     unsafe fn paint(&mut self, gl: &glow::Context, f: &Frame) {
         unsafe {
             self.upload(gl);
+            Self::fill(
+                gl,
+                &mut self.free,
+                &f.free,
+                WIRE_STRIDE * 2,
+                glow::STREAM_DRAW,
+            );
             let light = f.light;
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LEQUAL);
@@ -790,10 +773,11 @@ impl Renderer {
             gl.clear(glow::DEPTH_BUFFER_BIT);
             gl.disable(glow::BLEND);
 
-            let set = |prog: glow::Program| {
+            let set = |prog: glow::Program, m: [f32; 16]| {
                 gl.use_program(Some(prog));
                 let u = |n: &str| gl.get_uniform_location(prog, n);
                 gl.uniform_matrix_4_f32_slice(u("u_mvp").as_ref(), false, &f.mvp);
+                gl.uniform_matrix_4_f32_slice(u("u_model").as_ref(), false, &m);
                 gl.uniform_3_f32(u("u_light").as_ref(), light[0], light[1], light[2]);
                 let e = f.to_eye;
                 gl.uniform_3_f32(u("u_to_eye").as_ref(), e[0], e[1], e[2]);
@@ -804,27 +788,36 @@ impl Renderer {
                 gl.uniform_1_f32(u("u_total").as_ref(), self.turns as f32);
                 gl.uniform_1_f32(u("u_upto").as_ref(), f.upto);
             };
+            let draw = |b: &Buf, mode: u32, n: usize| {
+                gl.bind_vertex_array(Some(b.vao));
+                gl.draw_arrays(mode, 0, n as i32);
+            };
+            let spin = model(f.theta, 0.0);
+            let still = model(0.0, 0.0);
 
-            set(self.solid_prog);
-            gl.bind_vertex_array(Some(self.solid_vao));
-            gl.draw_arrays(glow::TRIANGLES, 0, self.solid_verts as i32);
+            set(self.solid_prog, spin);
+            draw(&self.spin, glow::TRIANGLES, self.spin.count);
+            if f.machine {
+                set(self.solid_prog, still);
+                draw(&self.still, glow::TRIANGLES, self.still.count);
+                set(self.solid_prog, model(0.0, f.guide_y));
+                draw(&self.carriage, glow::TRIANGLES, self.carriage.count);
+            }
 
             // The wire up to the scrub point, as one strip.
-            let points = ((f.upto.max(0.0) * SAMPLES as f32) as usize + 1).min(self.wire_points);
+            let points = ((f.upto.max(0.0) * SAMPLES as f32) as usize + 1).min(self.wire.count);
             if points >= 2 {
-                set(self.wire_prog);
-                gl.bind_vertex_array(Some(self.wire_vao));
-                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, (points * 2) as i32);
+                set(self.wire_prog, spin);
+                draw(&self.wire, glow::TRIANGLE_STRIP, points * 2);
+            }
+            if f.machine && self.free.count >= 2 {
+                set(self.wire_prog, still);
+                draw(&self.free, glow::TRIANGLE_STRIP, self.free.count * 2);
             }
 
             if f.top_flange {
-                set(self.solid_prog);
-                gl.enable(glow::BLEND);
-                gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-                gl.depth_mask(false);
-                gl.bind_vertex_array(Some(self.top_vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, self.top_verts as i32);
-                gl.depth_mask(true);
+                set(self.solid_prog, spin);
+                draw(&self.top, glow::TRIANGLES, self.top.count);
             }
             gl.bind_vertex_array(None);
             gl.disable(glow::DEPTH_TEST);
@@ -842,6 +835,12 @@ struct Frame {
     radius: f32,
     upto: f32,
     top_flange: bool,
+    machine: bool,
+    /// Spindle angle (rad) and the guide's height (mm).
+    theta: f32,
+    guide_y: f32,
+    /// Free wire vertices, in the world.
+    free: Vec<f32>,
 }
 
 fn norm(v: [f32; 3]) -> [f32; 3] {
@@ -857,7 +856,7 @@ pub fn coil_3d(
     ui: &mut Ui,
     d: &Design,
     c: &Computed,
-    upto: usize,
+    upto: f64,
     cam: &mut Camera,
     renderer: Option<&Arc<Mutex<Renderer>>>,
 ) {
@@ -928,9 +927,16 @@ pub fn coil_3d(
         ui.ctx().request_repaint();
     }
 
-    let (span, channel, od, turns) = {
+    let (span, channel, od, turns, guide_r, guide_angle) = {
         let r = renderer.lock().expect("renderer lock");
-        (r.span_mm, r.channel, r.od, r.turns)
+        (
+            r.span_mm,
+            r.channel,
+            r.od,
+            r.turns,
+            r.guide_r,
+            r.guide_angle,
+        )
     };
     let scale = rect.width().min(rect.height()) / span * 0.9 * cam.zoom;
     let view = View::new(cam, channel / 2.0, scale, span);
@@ -941,6 +947,10 @@ pub fn coil_3d(
         0.35 * r[0][1] + 0.6 * r[1][1] + 0.72 * r[2][1],
         0.35 * r[0][2] + 0.6 * r[1][2] + 0.72 * r[2][2],
     ]);
+    let upto = upto.clamp(0.0, turns as f64);
+    let feed = Feed::at(d, c, upto, guide_r, guide_angle);
+    let mut free = Vec::new();
+    strip(&mut free, &feed.free_wire(upto as f32));
     let frame = Frame {
         mvp: view.mvp(rect.size(), cam.pan),
         to_eye: view.rows[2],
@@ -950,8 +960,12 @@ pub fn coil_3d(
         // Never thinner than about a pixel, so a zoomed-out coil still
         // reads as wire rather than gaps.
         radius: (od / 2.0).max(0.6 / scale),
-        upto: upto.min(turns) as f32,
+        upto: upto as f32,
         top_flange: cam.top_flange,
+        machine: cam.machine,
+        theta: feed.theta,
+        guide_y: feed.eyelet[1],
+        free,
     };
     let r = renderer.clone();
     painter.add(egui::PaintCallback {
@@ -971,37 +985,88 @@ pub fn coil_3d(
         ui.ctx().request_repaint();
     }
 
-    // The guide and the free wire to the lay point, while winding.
-    let origin = rect.center() + cam.pan;
-    let n = upto.min(c.cross.turn_count());
-    if n > 0 && n < c.cross.turn_count() {
-        let side = c.cross.side_station();
-        let t = c.cross.cuts[side][n - 1];
-        let core = Core::new(
-            d.bobbin.core_width_mm as f32,
-            d.bobbin.core_length_mm as f32,
-        );
-        let u = c.cross.stations[side].u as f32;
-        let (p, nn) = core.at(u, t.z_mm as f32);
-        let lay = [p[0], t.y_mm as f32, p[1]];
-        let span = d.lay.free_span_mm.max(5.0) as f32;
-        let g = [
-            p[0] + nn[0] * span,
-            guide_at(c, n as f64) as f32,
-            p[1] + nn[1] * span,
-        ];
-        let (gp, lp) = (view.to_screen(g, origin), view.to_screen(lay, origin));
-        if rect.contains(gp) || rect.contains(lp) {
-            painter.line_segment([gp, lp], Stroke::new(1.0, Color32::from_rgb(214, 120, 48)));
-            painter.circle_filled(gp, 5.0, Color32::from_rgb(255, 122, 77));
+    if cam.machine {
+        let origin = rect.center() + cam.pan;
+        let gp = view.to_screen(feed.eyelet, origin);
+        if rect.contains(gp) {
             painter.text(
-                gp + Vec2::new(8.0, -8.0),
+                gp + Vec2::new(10.0, -10.0),
                 Align2::LEFT_BOTTOM,
                 "guide",
                 FontId::proportional(11.0),
                 Color32::from_gray(60),
             );
         }
+    }
+}
+
+/// Where the wire is fed from at a moment in the wind: the spindle's angle
+/// and the guide's eyelet, which stays put except for the traverse.
+///
+/// The guide doesn't put wire on the coil itself: wire leaves the eyelet
+/// and runs straight to where it meets the turning coil, touching it on a
+/// tangent. So the bobbin is turned until the last laid point is that
+/// tangent point, as seen from the eyelet.
+struct Feed {
+    theta: f32,
+    eyelet: [f32; 3],
+    /// Where the wire meets the coil, in the world.
+    contact: [f32; 3],
+}
+
+impl Feed {
+    fn at(d: &Design, c: &Computed, upto: f64, guide_r: f32, guide_angle: f32) -> Feed {
+        let core = core_of(d);
+        let total = c.cross.turn_count();
+        let guide_y = guide_at(c, upto) as f32;
+        let eyelet = [
+            guide_r * guide_angle.cos(),
+            guide_y,
+            guide_r * guide_angle.sin(),
+        ];
+        if total == 0 {
+            return Feed {
+                theta: 0.0,
+                eyelet,
+                contact: eyelet,
+            };
+        }
+        let (n, u) = if upto >= total as f64 {
+            (total - 1, 0.9999)
+        } else {
+            (upto.floor() as usize, upto.fract() as f32)
+        };
+        let (y, z) = lay_at(&c.cross, n, u);
+        let (p, _) = core.at(u, z);
+        let (q, _) = core.at(u + 1e-3, z);
+        let t = {
+            let (dx, dz) = (q[0] - p[0], q[1] - p[1]);
+            let l = (dx * dx + dz * dz).sqrt().max(1e-9);
+            [dx / l, dz / l]
+        };
+        // Back along the tangent from the contact to the eyelet's radius.
+        let pt = p[0] * t[0] + p[1] * t[1];
+        let pp = p[0] * p[0] + p[1] * p[1];
+        let back = pt + (pt * pt - pp + guide_r * guide_r).max(0.0).sqrt();
+        let g = [p[0] - t[0] * back, p[1] - t[1] * back];
+        // Turn the bobbin so that point faces the eyelet.
+        let theta = guide_angle - g[1].atan2(g[0]);
+        Feed {
+            theta,
+            eyelet,
+            contact: spun([p[0], y, p[1]], theta),
+        }
+    }
+
+    /// The wire from the spool's side, through the eyelet, to the coil.
+    fn free_wire(&self, turn: f32) -> Vec<([f32; 3], [f32; 3], f32)> {
+        let e = self.eyelet;
+        let (cx, cz) = (e[0], e[2]);
+        let l = (cx * cx + cz * cz).sqrt().max(1e-6);
+        let out = [cx / l, 0.0, cz / l];
+        let from = [e[0] + out[0] * 40.0, e[1] + 70.0, e[2] + out[2] * 40.0];
+        let up = [0.0, 1.0, 0.0];
+        vec![(from, up, turn), (e, up, turn), (self.contact, up, turn)]
     }
 }
 
@@ -1021,7 +1086,7 @@ fn backdrop(painter: &egui::Painter, rect: Rect) {
 
 /// The navigation bar along the bottom of the canvas.
 fn nav_bar(ui: &mut Ui, canvas: Rect, cam: &mut Camera) {
-    let size = Vec2::new(440.0, 30.0);
+    let size = Vec2::new(510.0, 30.0);
     let bar = Rect::from_center_size(pos2(canvas.center().x, canvas.bottom() - 26.0), size);
     ui.painter().rect(
         bar,
@@ -1083,7 +1148,9 @@ fn nav_bar(ui: &mut Ui, canvas: Rect, cam: &mut Camera) {
             }
             ui.separator();
             ui.toggle_value(&mut cam.top_flange, "Top flange")
-                .on_hover_text("Show the top flatwork, see-through");
+                .on_hover_text("Show the top flange or flatwork");
+            ui.toggle_value(&mut cam.machine, "Machine")
+                .on_hover_text("Show the winder: spindle, motor, traverse and guide");
         },
     );
 }
@@ -1119,7 +1186,7 @@ mod tests {
         let points = g.wire.len() / WIRE_STRIDE / 2;
         assert_eq!(points, 5000 * SAMPLES + 1);
         assert!(g.wire.iter().all(|v| v.is_finite()));
-        assert_eq!(g.solid.len() % (SOLID_STRIDE * 3), 0);
+        assert_eq!(g.parts.spin.0.len() % (SOLID_STRIDE * 3), 0);
         // Every wire point sits between the flanges and outside the core.
         for v in g.wire.chunks(WIRE_STRIDE) {
             assert!((-1e-3..=6.5 + 1e-3).contains(&v[1]), "{}", v[1]);
@@ -1127,8 +1194,37 @@ mod tests {
     }
 
     #[test]
+    fn wire_reaches_the_coil_on_a_tangent_from_the_eyelet() {
+        let d = Design::example("strat").unwrap();
+        let c = Computed::new(&d).unwrap();
+        let g = Geometry::build(&d, &c);
+        let (r, a) = (g.parts.guide_r, g.parts.guide_angle);
+        let core = core_of(&d);
+        for upto in [10.25, 1234.6, 4000.9] {
+            let f = Feed::at(&d, &c, upto, r, a);
+            // The eyelet stays where the machine has it.
+            let er = (f.eyelet[0].powi(2) + f.eyelet[2].powi(2)).sqrt();
+            assert!((er - r).abs() < 1e-3);
+            // From the eyelet the wire runs along the coil's tangent at the
+            // contact, in the direction the wire is being laid.
+            let (n, u) = (upto.floor() as usize, upto.fract() as f32);
+            let (_, z) = lay_at(&c.cross, n, u);
+            let (p0, _) = core.at(u, z);
+            let (p1, _) = core.at(u + 1e-3, z);
+            let t = spun([p1[0] - p0[0], 0.0, p1[1] - p0[1]], f.theta);
+            let w = [f.contact[0] - f.eyelet[0], 0.0, f.contact[2] - f.eyelet[2]];
+            let (lt, lw) = (
+                (t[0] * t[0] + t[2] * t[2]).sqrt(),
+                (w[0] * w[0] + w[2] * w[2]).sqrt(),
+            );
+            let cos = (t[0] * w[0] + t[2] * w[2]) / (lt * lw);
+            assert!(cos > 0.999, "upto {upto}: cos {cos}");
+        }
+    }
+
+    #[test]
     fn core_outline_closes_and_starts_on_the_short_end() {
-        let core = Core::new(16.0, 46.0);
+        let core = Core::new(16.0, 46.0, 4.8);
         let (p0, n0) = core.at(0.0, 0.0);
         let (p1, _) = core.at(0.99999, 0.0);
         assert!((p0[0] - 23.0).abs() < 1e-3 && n0 == [1.0, 0.0]);

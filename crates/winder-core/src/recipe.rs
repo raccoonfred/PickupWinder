@@ -101,6 +101,9 @@ fn import_one(name: &str, r: &Value) -> Result<Imported, DesignError> {
             core_width_mm: num(&["core_w"], 16.0),
             core_length_mm: num(&["core_l", "bobbin_len"], 46.0),
             build_depth_mm: num(&["win_d"], 6.0),
+            // The Python app modelled a square-cornered core.
+            corner_radius_mm: 0.0,
+            style: Default::default(),
         },
         speed: Speed {
             rpm: num(&["rpm"], 420.0),

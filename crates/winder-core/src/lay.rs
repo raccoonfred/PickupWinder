@@ -103,8 +103,8 @@ pub struct CrossSection {
     /// `BINS_PER_OD` bins per wire.
     pub profiles: Vec<Vec<f64>>,
     core_perimeter_mm: f64,
-    core_width_mm: f64,
-    core_length_mm: f64,
+    end_mm: f64,
+    side_mm: f64,
     ohm_per_m: f64,
     bare_mm: f64,
 }
@@ -140,8 +140,8 @@ impl CrossSection {
         let od = wire.od_mm;
         let channel = design.bobbin.channel_height_mm;
         let perimeter = design.bobbin.core_perimeter_mm();
-        let end = design.bobbin.core_width_mm / perimeter;
-        let length = design.bobbin.core_length_mm / perimeter;
+        let end = design.bobbin.end_mm() / perimeter;
+        let length = design.bobbin.side_mm() / perimeter;
         let stations: Vec<Station> = (0..STATIONS)
             .map(|j| {
                 let u = (j as f64 + 0.5) / STATIONS as f64;
@@ -268,8 +268,8 @@ impl CrossSection {
             channel_mm: channel,
             profiles,
             core_perimeter_mm: perimeter,
-            core_width_mm: design.bobbin.core_width_mm,
-            core_length_mm: design.bobbin.core_length_mm,
+            end_mm: design.bobbin.end_mm(),
+            side_mm: design.bobbin.side_mm(),
             ohm_per_m: wire.ohm_per_m,
             bare_mm: wire.bare_mm,
         }
@@ -306,12 +306,12 @@ impl CrossSection {
     /// The station in the middle of a long side: the classic cut through a
     /// pickup, and where the coil must fit under its cover.
     pub fn side_station(&self) -> usize {
-        self.nearest((self.core_width_mm + self.core_length_mm / 2.0) / self.core_perimeter_mm)
+        self.nearest((self.end_mm + self.side_mm / 2.0) / self.core_perimeter_mm)
     }
 
     /// The station in the middle of the first short end.
     pub fn end_station(&self) -> usize {
-        self.nearest(self.core_width_mm / 2.0 / self.core_perimeter_mm)
+        self.nearest(self.end_mm / 2.0 / self.core_perimeter_mm)
     }
 
     fn nearest(&self, u: f64) -> usize {
@@ -585,8 +585,9 @@ mod tests {
             assert_eq!(c.len(), 5000);
             assert!(c.iter().enumerate().all(|(i, t)| t.n as usize == i + 1));
         }
-        // Two stations on each short end of a 16 x 46 core.
-        assert_eq!(cs.stations.iter().filter(|s| s.on_end).count(), 4);
+        // A PAF core's round ends are about 8 % of the way round each: one
+        // station on each.
+        assert_eq!(cs.stations.iter().filter(|s| s.on_end).count(), 2);
         assert!(!cs.stations[cs.side_station()].on_end);
         assert!(cs.stations[cs.end_station()].on_end);
     }

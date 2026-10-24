@@ -109,15 +109,21 @@ target_dcr_kohm = 6.0
 fill_section = 2   # optional; default is the biggest section
 ```
 
-- **3D** (the default) shows the bobbin and its flatwork, with every turn
-  drawn as round copper wire around the core, exactly where the lay model
-  put it. Navigation works as in Fusion:
+- **3D** (the default) shows the bobbin as it really is, mounted on the
+  winder. Strat and Tele bobbins are fibre flatwork on six rod magnets
+  (staggered on the Strat), with the lead eyelets. Humbucker and P-90
+  bobbins are moulded, with pole screws. The bobbin sits on the spindle's
+  platen above the stepper and turns as it winds. Beside it the traverse
+  rail carries the guide arm and its ceramic eyelet. The wire runs from the
+  eyelet to the coil on a tangent, as it does on a real winder. Every turn
+  is drawn as round copper wire, exactly where the lay model put it.
+  Navigation works as in Fusion:
   - Scroll zooms at the pointer, right down onto single wires.
   - Middle-drag pans and Shift + middle-drag orbits.
   - Left-drag does whatever the navigation bar has picked: Orbit, Pan or
     Zoom.
   - The bar also has Fit (or double-click), Home, perspective or
-    orthographic, and the top flange on or off.
+    orthographic, the top flange on or off, and the machine on or off.
 
   The **ViewCube** works like Autodesk's. Click any of its 26 faces, edges
   or corners to swing to that view, or drag the cube to orbit. Drag the

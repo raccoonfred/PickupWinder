@@ -37,8 +37,10 @@ idea that a pickup bobbin is a long, narrow rectangle.
   coil a free span later. For every millimetre wound, the lay point closes
   1/span of the gap. Reversals round off and steps land late, so the guide
   offset matters for perfect layers.
-- **A pickup bobbin is not round.** The wire is pressed onto the coil only
-  where it wraps the short ends. Across the long sides it runs straight from
+- **A pickup bobbin is not round.** A single coil winds onto a row of six
+  rod magnets, one magnet wide with round ends; a humbucker coil onto a
+  moulded core about 56.5 by 6.5 mm. The wire is pressed onto the coil only
+  where it wraps the round ends. Across the long sides it runs straight from
   one contact to the next, so the coil bulges there.
 - **Scatter** is irregular traverse speed and reversal points: hand guiding
   on a Schatten-style machine, or a new pitch per layer on a CNC machine
@@ -107,12 +109,16 @@ table. These are 42 AWG coils with a 25 mm free span:
 
 | Strat, 8000 turns | kΩ | build, long side (mm) | build, short end (mm) | fill | C (pF) | unloaded peak (kHz) |
 | --- | --- | --- | --- | --- | --- | --- |
-| perfect layer | 5.84 | 3.26 | 3.27 | 90 % | 129 | 9.5 |
-| helix 123 TPL | 5.89 | 3.81 | 3.66 | 79 % | 83 | 11.8 |
-| helix 92 TPL | 5.91 | 4.87 | 3.42 | 77 % | 84 | 11.7 |
-| helix 62 TPL | 6.07 | 5.98 | 4.47 | 59 % | 69 | 12.9 |
-| scatter 62-139 TPL | 5.98 | 4.87 | 4.17 | 68 % | 134 | 9.3 |
-| `designs/strat-vintage.toml` | 5.95 | 4.54 | 4.12 | 70 % | 137 | 9.2, at 2.19 H |
+| perfect layer | 5.64 | 3.27 | 3.26 | 88 % | 162 | 8.7 |
+| helix 123 TPL | 5.70 | 4.07 | 3.66 | 79 % | 79 | 12.4 |
+| helix 92 TPL | 5.73 | 5.37 | 3.43 | 74 % | 76 | 12.7 |
+| helix 62 TPL | 5.87 | 7.17 | 3.97 | 59 % | 80 | 12.3 |
+| scatter 62-139 TPL | 5.79 | 4.90 | 4.20 | 67 % | 125 | 9.9 |
+| `designs/strat-vintage.toml` | 5.76 | 4.62 | 4.04 | 70 % | 118 | 10.1, at 2.08 H |
+
+The Strat here is a real one: the wire winds straight onto six 4.9 mm pole
+magnets with a 52 mm spread, so the core is 56.9 by 4.9 mm with round ends,
+not the 46 by 16 mm block of the first version.
 
 What this agrees with:
 
@@ -120,8 +126,8 @@ What this agrees with:
   layers and 77 to 79 % for crossed helices.
 - **Perfect layers** match the old layer model within 1 % on DCR. The old
   model was validated against published Strat and PAF coils.
-- **The vintage Strat design** gives about 5.9 kΩ, 2.2 H and 140 pF, with an
-  unloaded peak near 9 kHz. That is in the range people measure on
+- **The vintage Strat design** gives about 5.8 kΩ, 2.1 H and 120 pF, with an
+  unloaded peak near 10 kHz. That is in the range people measure on
   vintage-style Strat pickups.
 - **Lower TPL lowers capacitance** in the model, as winders report.
   Crossing passes put turns that are close in number next to each other.

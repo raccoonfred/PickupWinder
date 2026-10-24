@@ -8,9 +8,11 @@ direction = "cw"           # cw | ccw (seen from the front of the bobbin)
 
 [bobbin]
 channel_height_mm = 11.0   # flange to flange, along the traverse
-core_width_mm = 16.0
-core_length_mm = 46.0
+core_width_mm = 4.9        # one pole magnet across: the wire winds on the magnets
+core_length_mm = 56.9      # 52 mm pole spread plus one magnet
 build_depth_mm = 6.0
+corner_radius_mm = 2.45    # round ends, the magnets' own radius
+style = "strat"            # fibre flatwork, six rod magnets
 
 [speed]
 rpm = 420
