@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Winding model rebuilt to match real machines** (see
+  `docs/WINDING_MODEL.md`). Patterns are now set by turns per pass, as
+  geared, cam and CNC pickup winders are: `layer` (perfect layers, with a
+  step zone on the short end and a half-wire climb at each flange), `helix`
+  (fixed traverse ratio) and `scatter` (random turns per pass and reversal
+  points per pass, seeded). Design files move to version 2; version 1 files
+  are converted on load. Python recipes keep their `pass` value.
+- The lay follows each turn through 16 stations around the core, with wire
+  lag behind the guide (`[lay] free_span_mm`). Wire settles into grooves on
+  the short ends and spans straight across the long sides. Crossed helices
+  land at the published 77-79 % fill and perfect layers at about 90 %.
+- Self-capacitance is now worked out from which turns touch which, and
+  inductance from the laid build. The app and `winder sim` show these
+  alongside long-side and short-end build and the fill factor.
+- `winder machine` lists GRBL acceleration and junction settings, so the
+  spindle keeps its speed through the guide's per-turn steps.
+
 ### Added
 - **Rust port, milestone 2: desktop design editor (`winder-app`).** An egui
   app that edits a design and redraws it as you type: cross-section of every

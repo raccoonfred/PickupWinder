@@ -51,6 +51,22 @@ pub fn design_form(ui: &mut Ui, d: &mut Design) {
                 );
             });
         });
+    egui::CollapsingHeader::new(RichText::new("Wire path").strong())
+        .default_open(false)
+        .show(ui, |ui| {
+            grid(ui, "lay", |ui| {
+                row(
+                    ui,
+                    "Free span",
+                    mm(&mut d.lay.free_span_mm, 500.0).speed(0.5),
+                )
+                .on_hover_text(
+                    "Free wire from the guide's eye to where it meets the coil. \
+                     The longer it is, the more the wire lags the guide and the \
+                     rounder the reversals.",
+                );
+            });
+        });
     egui::CollapsingHeader::new(RichText::new("Estimate inputs").strong())
         .default_open(false)
         .show(ui, |ui| {
@@ -198,13 +214,17 @@ enum Action {
 fn sections(ui: &mut Ui, d: &mut Design) {
     let mut action = None;
     let n = d.sections.len();
+    let od = d.wire_spec().map_or(0.071, |w| w.od_mm);
+    let channel = d.bobbin.channel_height_mm;
+    let side_by_side = ((channel - od) / od).max(1.0).round();
     for (i, s) in d.sections.iter_mut().enumerate() {
         let title = format!("{}. {} · {} turns", i + 1, s.pattern.label(), s.turns);
         egui::CollapsingHeader::new(RichText::new(title).strong())
             .id_salt(("section", i))
             .default_open(i == 0)
             .show(ui, |ui| {
-                section(ui, i, s);
+                let window = channel - s.inset_start_mm - s.inset_end_mm - od;
+                section(ui, i, s, window, od);
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(i > 0, egui::Button::new("Up").small())
@@ -243,28 +263,54 @@ fn sections(ui: &mut Ui, d: &mut Design) {
         None => {}
     }
     ui.horizontal(|ui| {
-        if ui.button("+ Layer section").clicked() {
-            d.sections.push(Section::layer(200, 1.0));
+        if ui.button("+ Layer").clicked() {
+            d.sections.push(Section::layer(200));
         }
-        if ui.button("+ Scatter section").clicked() {
-            d.sections.push(Section {
-                pattern: scatter_default(d.sections.len() as u64),
-                ..Section::layer(1000, 1.0)
-            });
+        if ui.button("+ Helix").clicked() {
+            d.sections
+                .push(Section::helix(1000, (side_by_side * 0.7).round()));
+        }
+        if ui.button("+ Scatter").clicked() {
+            d.sections.push(Section::with(
+                1000,
+                scatter_default(d.sections.len() as u64, side_by_side),
+            ));
         }
     });
 }
 
-fn scatter_default(seed: u64) -> Pattern {
+fn scatter_default(seed: u64, side_by_side: f64) -> Pattern {
     Pattern::Scatter {
-        pitch_min_od: 1.2,
-        pitch_max_od: 1.8,
-        inset_max_mm: 0.3,
+        tpl_min: (side_by_side * 0.55).round(),
+        tpl_max: (side_by_side * 0.85).round(),
+        reversal_jitter_mm: 0.3,
         seed: 1000 + seed,
     }
 }
 
-fn section(ui: &mut Ui, i: usize, s: &mut Section) {
+/// Turns per pass, with the pitch it gives shown alongside.
+fn tpl_row(ui: &mut Ui, label: &str, tpl: &mut f64, min: f64, window: f64, od: f64) {
+    ui.label(label);
+    ui.horizontal(|ui| {
+        ui.add(DragValue::new(tpl).range(min.max(1.0)..=2000.0).speed(0.5))
+            .on_hover_text(
+                "Turns the spindle makes while the guide crosses the window once. \
+                 Pickups are usually wound at 50-200.",
+            );
+        let pitch = window / tpl.max(1.0) / od;
+        let text = format!("pitch {pitch:.2} × OD");
+        if pitch < 1.0 {
+            ui.colored_label(egui::Color32::from_rgb(224, 122, 90), text)
+                .on_hover_text("Closer than one wire: turns will push and pile up");
+        } else {
+            ui.weak(text);
+        }
+    });
+    ui.end_row();
+}
+
+fn section(ui: &mut Ui, i: usize, s: &mut Section, window: f64, od: f64) {
+    let side_by_side = (window / od).max(1.0).round();
     grid(ui, ("section-grid", i), |ui| {
         row(
             ui,
@@ -273,60 +319,87 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section) {
         );
         ui.label("Pattern");
         ui.horizontal(|ui| {
-            let is_layer = matches!(s.pattern, Pattern::Layer { .. });
-            if ui.selectable_label(is_layer, "Layer").clicked() && !is_layer {
-                s.pattern = Pattern::Layer { pitch_od: 1.0 };
+            let kind = s.pattern.label();
+            if ui
+                .selectable_label(kind == "layer", "Layer")
+                .on_hover_text("Perfect layers: side by side, stepping one wire per turn")
+                .clicked()
+                && kind != "layer"
+            {
+                s.pattern = Pattern::Layer {
+                    step_fraction: None,
+                };
             }
-            if ui.selectable_label(!is_layer, "Scatter").clicked() && is_layer {
-                s.pattern = scatter_default(i as u64);
+            if ui
+                .selectable_label(kind == "helix", "Helix")
+                .on_hover_text("A fixed traverse ratio, like a geared or cam machine")
+                .clicked()
+                && kind != "helix"
+            {
+                s.pattern = Pattern::Helix {
+                    tpl: (side_by_side * 0.7).round(),
+                };
+            }
+            if ui
+                .selectable_label(kind == "scatter", "Scatter")
+                .on_hover_text("Hand-guided character: every pass different")
+                .clicked()
+                && kind != "scatter"
+            {
+                s.pattern = scatter_default(i as u64, side_by_side);
             }
         });
         ui.end_row();
         match &mut s.pattern {
-            Pattern::Layer { pitch_od } => {
-                row(
-                    ui,
-                    "Pitch",
-                    DragValue::new(pitch_od)
-                        .range(0.5..=20.0)
-                        .speed(0.01)
-                        .suffix(" × OD"),
-                )
-                .on_hover_text(
-                    "Traverse per turn, in wire diameters. 1.0 lays each turn beside the last.",
-                );
+            Pattern::Layer { step_fraction } => {
+                ui.label("Turns per layer");
+                ui.weak(format!(
+                    "{:.0}, then a half-wire climb",
+                    (window / od + 0.5).floor()
+                ));
+                ui.end_row();
+                let mut own = step_fraction.is_some();
+                ui.label("Step zone");
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut own, "")
+                        .on_hover_text(
+                            "Off: the guide steps while the wire wraps the first short end",
+                        )
+                        .changed()
+                    {
+                        *step_fraction = own.then_some(0.15);
+                    }
+                    if let Some(f) = step_fraction {
+                        ui.add(
+                            DragValue::new(f)
+                                .range(0.02..=1.0)
+                                .speed(0.005)
+                                .suffix(" of a turn"),
+                        );
+                    } else {
+                        ui.weak("first short end");
+                    }
+                });
+                ui.end_row();
             }
+            Pattern::Helix { tpl } => tpl_row(ui, "Turns per pass", tpl, 1.0, window, od),
             Pattern::Scatter {
-                pitch_min_od,
-                pitch_max_od,
-                inset_max_mm,
+                tpl_min,
+                tpl_max,
+                reversal_jitter_mm,
                 seed,
             } => {
-                row(
-                    ui,
-                    "Pitch from",
-                    DragValue::new(pitch_min_od)
-                        .range(0.5..=20.0)
-                        .speed(0.01)
-                        .suffix(" × OD"),
-                );
-                if *pitch_max_od < *pitch_min_od {
-                    *pitch_max_od = *pitch_min_od;
+                tpl_row(ui, "Turns per pass from", tpl_min, 1.0, window, od);
+                if *tpl_max < *tpl_min {
+                    *tpl_max = *tpl_min;
                 }
-                let lo = *pitch_min_od;
-                row(
-                    ui,
-                    "Pitch to",
-                    DragValue::new(pitch_max_od)
-                        .range(lo..=20.0)
-                        .speed(0.01)
-                        .suffix(" × OD"),
-                )
-                .on_hover_text("Each pass picks its pitch at random in this range");
+                let lo = *tpl_min;
+                tpl_row(ui, "to", tpl_max, lo, window, od);
                 row(
                     ui,
                     "Reversal wander",
-                    DragValue::new(inset_max_mm)
+                    DragValue::new(reversal_jitter_mm)
                         .range(0.0..=3.0)
                         .speed(0.01)
                         .suffix(" mm"),
@@ -370,14 +443,16 @@ fn section(ui: &mut Ui, i: usize, s: &mut Section) {
             "Inset, flange 2",
             mm(&mut s.inset_end_mm, 10.0).speed(0.01),
         );
-        row(
-            ui,
-            "Dwell at reversal",
-            DragValue::new(&mut s.dwell_turns)
-                .range(0.0..=20.0)
-                .speed(0.1)
-                .suffix(" turns"),
-        );
+        if !matches!(s.pattern, Pattern::Layer { .. }) {
+            row(
+                ui,
+                "Dwell at reversal",
+                DragValue::new(&mut s.dwell_turns)
+                    .range(0.0..=20.0)
+                    .speed(0.1)
+                    .suffix(" turns"),
+            );
+        }
         let mut stop = s.stop_after.is_some();
         ui.label("Pause after");
         ui.horizontal(|ui| {

@@ -70,7 +70,15 @@ impl Frame {
     }
 }
 
-pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, coloring: Coloring) {
+pub fn cross_section(
+    ui: &mut Ui,
+    d: &Design,
+    c: &Computed,
+    station: usize,
+    upto: usize,
+    coloring: Coloring,
+) {
+    let cut = &c.cross.cuts[station];
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
     let rect = resp.rect;
     let channel = c.cross.channel_mm;
@@ -110,10 +118,10 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
     );
 
     // Every turn laid so far.
-    let n = upto.min(c.cross.turns.len());
-    let total = c.cross.turns.len().max(1) as f32;
+    let n = upto.min(cut.len());
+    let total = cut.len().max(1) as f32;
     let r = (c.cross.od_mm as f32 / 2.0 * f.px_per_mm).max(0.6);
-    for t in &c.cross.turns[..n] {
+    for t in &cut[..n] {
         let col = match coloring {
             Coloring::Order => copper(t.n as f32 / total),
             Coloring::Section => SECTION_COLORS[t.section % SECTION_COLORS.len()],
@@ -122,7 +130,7 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
     }
 
     // Guide and the turn being laid.
-    if let Some(t) = n.checked_sub(1).map(|i| c.cross.turns[i]) {
+    if let Some(t) = n.checked_sub(1).map(|i| cut[i]) {
         let p = f.pt(t.y_mm, t.z_mm);
         painter.circle_stroke(p, r + 2.5, Stroke::new(1.5, ACCENT));
         let guide = pos2(p.x, top.y - 14.0);
@@ -146,7 +154,7 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
         FontId::proportional(12.0),
         TEXT,
     );
-    let build = c.cross.build_mm_upto(n);
+    let build = c.cross.build_at(station, n);
     let over = build > d.bobbin.build_depth_mm;
     painter.text(
         pos2(top.x - flange - 6.0, f.pt(0.0, build).y),
@@ -158,7 +166,7 @@ pub fn cross_section(ui: &mut Ui, d: &Design, c: &Computed, upto: usize, colorin
 
     // Hover: which turn is this?
     if let Some(pos) = resp.hover_pos() {
-        let hit = c.cross.turns[..n]
+        let hit = cut[..n]
             .iter()
             .rev()
             .find(|t| f.pt(t.y_mm, t.z_mm).distance(pos) <= r.max(3.0));
@@ -200,6 +208,15 @@ pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
     }
     let pts: Vec<Pos2> = c.lay.iter().map(|&(t, mm)| pos2(x(t), y(mm))).collect();
     painter.line(pts, Stroke::new(1.0, Color32::from_rgb(214, 120, 48)));
+    // Where the wire actually landed, mid long side: it trails the guide.
+    let cut = &c.cross.cuts[c.cross.side_station()];
+    let every = cut.len().div_ceil(4000).max(1);
+    let laid: Vec<Pos2> = cut
+        .iter()
+        .step_by(every)
+        .map(|t| pos2(x(t.n as f64), y(t.y_mm)))
+        .collect();
+    painter.line(laid, Stroke::new(1.0, Color32::from_rgb(86, 156, 214)));
     for &s in &c.stops {
         painter.line_segment(
             [pos2(x(s), rect.top()), pos2(x(s), rect.bottom())],
@@ -212,6 +229,13 @@ pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
         Stroke::new(1.5, ACCENT),
     );
 
+    painter.text(
+        rect.center_bottom() + Vec2::new(0.0, 14.0),
+        Align2::CENTER_CENTER,
+        "orange: guide · blue: where the wire landed, mid long side",
+        FontId::proportional(11.0),
+        TEXT,
+    );
     painter.text(
         rect.left_bottom() + Vec2::new(0.0, 14.0),
         Align2::LEFT_CENTER,
@@ -247,12 +271,12 @@ pub fn lay_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
 }
 
 /// Top of the winding across the channel, now and when finished.
-pub fn build_plot(ui: &mut Ui, d: &Design, c: &Computed, upto: usize) {
+pub fn build_plot(ui: &mut Ui, d: &Design, c: &Computed, station: usize, upto: usize) {
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
     let rect = resp.rect.shrink2(Vec2::new(56.0, 32.0));
     let bins = 220;
-    let full = profile_upto(&c.cross, usize::MAX, bins);
-    let now = profile_upto(&c.cross, upto, bins);
+    let full = profile_upto(&c.cross, station, usize::MAX, bins);
+    let now = profile_upto(&c.cross, station, upto, bins);
     let max = d
         .bobbin
         .build_depth_mm

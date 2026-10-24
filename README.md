@@ -83,18 +83,27 @@ cargo run --release -p winder-app -- designs/strat-vintage.toml
 Edit the bobbin, wire, speed and the stack of winding sections on the left.
 The middle shows the result, recomputed as you type:
 
-- **Cross-section**: every turn where it lands, coloured by turn order or by
-  section. Hover a wire to see its turn number. Each turn drops into the
-  lowest groove near the guide, so a layer pattern nests and scatter piles up
-  the way the toolpath sends it.
-- **Lay plot**: guide position against turn number, with section bands and
-  stop points.
+- **Cross-section**: every turn where it lands, cut through the middle of a
+  long side or through a short end, coloured by turn order or by section.
+  Hover a wire to see its turn number. Wire is pressed into its grooves on
+  the short ends and spans straight across the long sides, so crossed
+  patterns bulge there, as real coils do.
+- **Lay plot**: guide position against turn number, and where the wire
+  actually landed (it lags the guide), with section bands and stop points.
 - **Build profile**: the top of the coil across the channel, against the
   bobbin's build limit.
 
-Scrub or play the wind (1× to 1000× real speed). The right panel shows DCR
-both from the actual lay and from the layer model, wire length, build,
-inductance, capacitance, resonance and run time. **Export G-code** bakes the
+Sections are set the way real winders are, by **turns per pass**: `layer`
+(perfect layers, the guide steps one wire per turn), `helix` (a fixed
+traverse ratio, like a geared or cam machine) and `scatter` (a new turns per
+pass and reversal point for every pass). See
+[docs/WINDING_MODEL.md](docs/WINDING_MODEL.md) for how the lay is worked
+out and what it was checked against.
+
+Scrub or play the wind (1× to 1000× real speed). The right panel shows what
+the laid coil measures: DCR, wire length, build on the long side and short
+end, fill factor, inductance, self-capacitance, resonance and Q, plus the
+layer model's DCR as a cross-check, and run time. **Export G-code** bakes the
 program, reads it back to check it, then saves it. The File menu opens and
 saves designs (Ctrl+S), imports the Python app's recipes and loads a machine
 profile.
@@ -115,8 +124,9 @@ cargo test
 
 How the G-code drives the machine: X is the spindle measured in turns
 (`$100` = steps per revolution, 1600 at 1/8 step), Y is the traverse in mm
-(`$101` = 200 for a T8 with 8 mm lead). Every `G1` line lays one turn as a
-helix, and `G93` inverse-time feed makes each line's duration, and so the
+(`$101` = 200 for a T8 with 8 mm lead). Every `G1` line lays at most one
+turn (a perfect layer uses two: the step, then the hold), and `G93`
+inverse-time feed makes each line's duration, and so the
 RPM, exact. The program finds the traverse switch with `G38.2` on GRBL's
 probe input, then measures from there (`flange_offset_mm` in the machine
 profile). Every generated file is parsed back and checked: turn count,

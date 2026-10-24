@@ -25,6 +25,8 @@ pub struct WinderApp {
     status: String,
     view: View,
     coloring: Coloring,
+    /// Cut through the long side (true) or the short end.
+    long_side: bool,
     /// Turns shown; follows the end of the coil unless scrubbed or playing.
     scrub: f64,
     follow_end: bool,
@@ -48,6 +50,7 @@ impl WinderApp {
             status: "New design from the Strat preset.".into(),
             view: View::CrossSection,
             coloring: Coloring::Order,
+            long_side: true,
             scrub: 0.0,
             follow_end: true,
             playing: false,
@@ -246,35 +249,30 @@ impl WinderApp {
                     ui.label(RichText::new(v).strong());
                     ui.end_row();
                 };
-                kv(
-                    "DCR, from the lay",
-                    format!("{:.2} kΩ", c.cross.dcr_kohm(temp)),
-                );
-                kv("DCR, layer model", format!("{:.2} kΩ", e.dcr_kohm));
+                let l = &c.laid;
+                kv("DCR", format!("{:.2} kΩ", l.dcr_kohm));
                 kv(
                     "Wire",
-                    format!(
-                        "{:.0} m  ({:.0} ft)",
-                        c.cross.length_m(),
-                        c.cross.length_m() * 3.281
-                    ),
+                    format!("{:.0} m  ({:.0} ft)", l.length_m, l.length_m * 3.281),
                 );
                 kv(
-                    "Build",
+                    "Build, long side",
                     format!(
                         "{:.2} of {:.1} mm",
-                        c.cross.build_mm(),
-                        d.bobbin.build_depth_mm
+                        l.side_build_mm, d.bobbin.build_depth_mm
                     ),
                 );
-                kv("Inductance", format!("{:.2} H", e.inductance_h));
-                kv("Self-capacitance", format!("{:.0} pF", e.cap_pf));
-                kv("Resonant peak", format!("{:.1} kHz", e.resonance_khz));
-                kv("Q", format!("{:.1}", e.q_factor));
+                kv("Build, short end", format!("{:.2} mm", l.end_build_mm));
+                kv("Fill factor", format!("{:.0} %", l.fill_factor * 100.0));
+                kv("Inductance", format!("{:.2} H", l.inductance_h));
+                kv("Self-capacitance", format!("{:.0} pF", l.cap_pf));
+                kv("Resonant peak", format!("{:.1} kHz", l.resonance_khz));
+                kv("Q", format!("{:.1}", l.q_factor));
+                kv("DCR, layer model", format!("{:.2} kΩ", e.dcr_kohm));
                 kv("Passes", format!("{}", c.stats.passes));
                 kv("Run time", format!("{:.1} min", c.stats.minutes));
             });
-        if c.cross.build_mm() > d.bobbin.build_depth_mm {
+        if c.laid.build_mm > d.bobbin.build_depth_mm {
             ui.colored_label(WARN, "The coil is deeper than the bobbin allows.");
         }
         if e.break_warning() {
@@ -283,7 +281,10 @@ impl WinderApp {
                 format!("Tension is {:.0}% of breaking force.", e.break_risk * 100.0),
             );
         }
-        ui.weak(format!("DCR at {temp:.0} °C. L, C and the peak are estimates; measure finished coils to calibrate."));
+        ui.weak(format!(
+            "Worked out from where every turn lands. DCR at {temp:.0} °C. L, C and the peak \
+             are estimates; measure finished coils to calibrate."
+        ));
 
         ui.add_space(12.0);
         ui.heading("Machine");
@@ -314,6 +315,14 @@ impl WinderApp {
             ui.selectable_value(&mut self.view, View::CrossSection, "Cross-section");
             ui.selectable_value(&mut self.view, View::Lay, "Lay plot");
             ui.selectable_value(&mut self.view, View::Build, "Build profile");
+            if self.view != View::Lay {
+                ui.separator();
+                ui.label("Cut through");
+                ui.selectable_value(&mut self.long_side, true, "long side")
+                    .on_hover_text("Where the wire spans straight: the coil bulges here");
+                ui.selectable_value(&mut self.long_side, false, "short end")
+                    .on_hover_text("Where tension presses the wire into its grooves");
+            }
             if self.view == View::CrossSection {
                 ui.separator();
                 ui.label("Color by");
@@ -436,10 +445,17 @@ impl eframe::App for WinderApp {
             ui.separator();
             if let Some((shown, c)) = &self.computed {
                 let upto = self.scrub.round() as usize;
+                let station = if self.long_side {
+                    c.cross.side_station()
+                } else {
+                    c.cross.end_station()
+                };
                 match self.view {
-                    View::CrossSection => views::cross_section(ui, shown, c, upto, self.coloring),
+                    View::CrossSection => {
+                        views::cross_section(ui, shown, c, station, upto, self.coloring)
+                    }
                     View::Lay => views::lay_plot(ui, shown, c, upto),
-                    View::Build => views::build_plot(ui, shown, c, upto),
+                    View::Build => views::build_plot(ui, shown, c, station, upto),
                 }
             }
         });

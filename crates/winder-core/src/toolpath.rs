@@ -105,39 +105,70 @@ struct Pass {
     pitch_mm: f64,
 }
 
-struct Lay<'a> {
+/// Window edges for a section, as guide positions (wire centres).
+fn window(section: &Section, od: f64, channel: f64) -> (f64, f64) {
+    (
+        section.inset_start_mm + od / 2.0,
+        channel - section.inset_end_mm - od / 2.0,
+    )
+}
+
+/// Draws the next pass of a steady (helix or scatter) section.
+struct Passes<'a> {
     section: &'a Section,
     od: f64,
     channel: f64,
     rng: Rng,
 }
 
-impl Lay<'_> {
-    fn next_pass(&mut self) -> Pass {
-        let s = self.section;
-        let lo = s.inset_start_mm + self.od / 2.0;
-        let hi = self.channel - s.inset_end_mm - self.od / 2.0;
-        match s.pattern {
-            Pattern::Layer { pitch_od } => Pass {
-                lo,
-                hi,
-                pitch_mm: pitch_od * self.od,
-            },
+impl Passes<'_> {
+    fn next(&mut self) -> Pass {
+        let (lo, hi) = window(self.section, self.od, self.channel);
+        let (lo, hi, tpl) = match self.section.pattern {
+            Pattern::Helix { tpl } => (lo, hi, tpl),
             Pattern::Scatter {
-                pitch_min_od,
-                pitch_max_od,
-                inset_max_mm,
+                tpl_min,
+                tpl_max,
+                reversal_jitter_mm,
                 ..
-            } => Pass {
-                lo: lo + self.rng.range(0.0, inset_max_mm),
-                hi: hi - self.rng.range(0.0, inset_max_mm),
-                pitch_mm: self.rng.range(pitch_min_od, pitch_max_od) * self.od,
-            },
+            } => (
+                lo + self.rng.range(0.0, reversal_jitter_mm),
+                hi - self.rng.range(0.0, reversal_jitter_mm),
+                self.rng.range(tpl_min, tpl_max),
+            ),
+            Pattern::Layer { .. } => unreachable!("layer sections step, they don't sweep"),
+        };
+        Pass {
+            lo,
+            hi,
+            // Turns per pass over this pass's own window, edge to edge.
+            pitch_mm: (hi - lo) / tpl,
         }
     }
 }
 
 const EPS: f64 = 1e-9;
+
+/// Where the guide is between sections, and what it has emitted so far.
+struct Cursor<'a> {
+    steps: Vec<Step>,
+    y: f64,
+    dir: f64,
+    pass: u32,
+    rpm_at: &'a dyn Fn(f64, f64) -> f64,
+}
+
+impl Cursor<'_> {
+    fn emit(&mut self, t0: f64, t: f64, rpm: f64, section: usize) {
+        self.steps.push(Step::Move(Move {
+            turns: t,
+            y_mm: self.y,
+            rpm: (self.rpm_at)(rpm, (t0 + t) / 2.0),
+            section,
+            pass: self.pass,
+        }));
+    }
+}
 
 pub fn generate(design: &Design) -> Result<Toolpath, DesignError> {
     design.validate()?;
@@ -157,99 +188,51 @@ pub fn generate(design: &Design) -> Result<Toolpath, DesignError> {
         r
     };
 
-    let mut steps = Vec::new();
-    let mut start_y = None;
-    let mut y = 0.0;
-    let mut dir = 1.0;
-    let mut pass_no: u32 = 0;
+    let od = wire.od_mm;
+    let channel = design.bobbin.channel_height_mm;
+    let start_y = window(&design.sections[0], od, channel).0;
+    let mut cur = Cursor {
+        steps: Vec::new(),
+        y: start_y,
+        dir: 1.0,
+        pass: 0,
+        rpm_at: &rpm_at,
+    };
     let mut section_start = 0.0;
 
     for (si, section) in design.sections.iter().enumerate() {
-        let seed = match section.pattern {
-            Pattern::Scatter { seed, .. } => seed,
-            Pattern::Layer { .. } => 0,
-        };
-        let mut lay = Lay {
-            section,
-            od: wire.od_mm,
-            channel: design.bobbin.channel_height_mm,
-            rng: Rng::new(seed),
-        };
-        let mut pass = lay.next_pass();
-        if start_y.is_none() {
-            y = pass.lo;
-            start_y = Some(y);
-        } else if si > 0 {
+        if si > 0 {
             // A new section starts a fresh pass from wherever the guide is.
-            pass_no += 1;
+            cur.pass += 1;
         }
-        steps.push(Step::SectionStart {
+        cur.steps.push(Step::SectionStart {
             section: si,
             turns: section_start,
         });
         let rpm = section.rpm.unwrap_or(speed.rpm);
-        let mut dwell_left = 0.0;
-        let mut t = section_start;
-
-        for k in 0..section.turns {
-            // One turn per move, split where the guide reverses.
-            let mut f = 1.0;
-            while f > EPS {
-                let t0 = t;
-                if dwell_left > EPS {
-                    let d = dwell_left.min(f);
-                    t += d;
-                    f -= d;
-                    dwell_left -= d;
-                } else {
-                    let edge = if dir > 0.0 { pass.hi } else { pass.lo };
-                    let room = (edge - y) * dir;
-                    let need = pass.pitch_mm * f;
-                    if need <= room + EPS {
-                        y += dir * need;
-                        t += f;
-                        f = 0.0;
-                    } else {
-                        let used = (room.max(0.0) / pass.pitch_mm).min(f);
-                        if used > EPS {
-                            y = edge;
-                            t += used;
-                            f -= used;
-                        }
-                        // Reverse and start the next pass.
-                        if t - t0 > EPS {
-                            steps.push(Step::Move(Move {
-                                turns: t,
-                                y_mm: y,
-                                rpm: rpm_at(rpm, (t0 + t) / 2.0),
-                                section: si,
-                                pass: pass_no,
-                            }));
-                        }
-                        dir = -dir;
-                        pass_no += 1;
-                        pass = lay.next_pass();
-                        dwell_left = section.dwell_turns;
-                        continue;
-                    }
-                }
-                if f <= EPS {
-                    // Snap the end of the turn so rounding never accumulates.
-                    t = section_start + (k + 1) as f64;
-                }
-                steps.push(Step::Move(Move {
-                    turns: t,
-                    y_mm: y,
-                    rpm: rpm_at(rpm, (t0 + t) / 2.0),
-                    section: si,
-                    pass: pass_no,
-                }));
+        match section.pattern {
+            Pattern::Layer { step_fraction } => {
+                let f = step_fraction
+                    .unwrap_or(design.bobbin.core_width_mm / design.bobbin.core_perimeter_mm());
+                layered(&mut cur, si, section, od, channel, f, rpm, section_start);
             }
-            t = section_start + (k + 1) as f64;
+            Pattern::Helix { .. } | Pattern::Scatter { .. } => {
+                let seed = match section.pattern {
+                    Pattern::Scatter { seed, .. } => seed,
+                    _ => 0,
+                };
+                let passes = Passes {
+                    section,
+                    od,
+                    channel,
+                    rng: Rng::new(seed),
+                };
+                steady(&mut cur, si, section, passes, rpm, section_start);
+            }
         }
         section_start += section.turns as f64;
         if let Some(msg) = &section.stop_after {
-            steps.push(Step::Stop {
+            cur.steps.push(Step::Stop {
                 section: si,
                 turns: section_start,
                 message: msg.clone(),
@@ -258,9 +241,115 @@ pub fn generate(design: &Design) -> Result<Toolpath, DesignError> {
     }
 
     Ok(Toolpath {
-        start_y_mm: start_y.unwrap_or(0.0),
-        steps,
+        start_y_mm: start_y,
+        steps: cur.steps,
     })
+}
+
+/// Perfect layers. Each turn the guide steps to the next wire position in
+/// the first `f` of the turn, then holds still for the rest, so the wire
+/// lies flat and square to the axis everywhere but the step zone. After
+/// the last turn of a layer it climbs half a wire, into the groove beside
+/// the flange, and the next layer comes back in the grooves of this one.
+#[allow(clippy::too_many_arguments)]
+fn layered(
+    cur: &mut Cursor,
+    si: usize,
+    section: &Section,
+    od: f64,
+    channel: f64,
+    f: f64,
+    rpm: f64,
+    section_start: f64,
+) {
+    let (lo, hi) = window(section, od, channel);
+    // Turns per layer: the window holds T wires plus the half-wire offset
+    // of the layer above.
+    let per_layer = (((hi - lo) / od + 0.5).floor() as u32).max(1);
+    // Start from the nearer edge, heading inward.
+    let (mut base, mut dir) = if (cur.y - lo).abs() <= (hi - cur.y).abs() {
+        (lo, 1.0)
+    } else {
+        (hi, -1.0)
+    };
+    let mut k = 0;
+    for i in 0..section.turns {
+        let t0 = section_start + i as f64;
+        let target = base + dir * k as f64 * od;
+        if (target - cur.y).abs() > EPS && f < 1.0 {
+            cur.y = target;
+            cur.emit(t0, t0 + f, rpm, si);
+        } else {
+            cur.y = target;
+        }
+        cur.emit(t0, t0 + 1.0, rpm, si);
+        k += 1;
+        if k == per_layer {
+            base += dir * (per_layer as f64 - 0.5) * od;
+            dir = -dir;
+            k = 0;
+            cur.pass += 1;
+        }
+    }
+    cur.dir = dir;
+}
+
+/// A guide sweeping steadily between the window edges, at a pitch each pass
+/// draws for itself. Moves are one turn each, split exactly at reversals.
+fn steady(
+    cur: &mut Cursor,
+    si: usize,
+    section: &Section,
+    mut passes: Passes,
+    rpm: f64,
+    section_start: f64,
+) {
+    let mut pass = passes.next();
+    let mut dwell_left = 0.0;
+    let mut t = section_start;
+    for k in 0..section.turns {
+        let mut f = 1.0;
+        while f > EPS {
+            let t0 = t;
+            if dwell_left > EPS {
+                let d = dwell_left.min(f);
+                t += d;
+                f -= d;
+                dwell_left -= d;
+            } else {
+                let edge = if cur.dir > 0.0 { pass.hi } else { pass.lo };
+                let room = (edge - cur.y) * cur.dir;
+                let need = pass.pitch_mm * f;
+                if need <= room + EPS {
+                    cur.y += cur.dir * need;
+                    t += f;
+                    f = 0.0;
+                } else {
+                    let used = (room.max(0.0) / pass.pitch_mm).min(f);
+                    if used > EPS {
+                        cur.y = edge;
+                        t += used;
+                        f -= used;
+                    }
+                    // Reverse and start the next pass.
+                    if t - t0 > EPS {
+                        cur.emit(t0, t, rpm, si);
+                    }
+                    cur.dir = -cur.dir;
+                    cur.pass += 1;
+                    pass = passes.next();
+                    dwell_left = section.dwell_turns;
+                    continue;
+                }
+            }
+            if f <= EPS {
+                // Snap the end of the turn so rounding never accumulates.
+                t = section_start + (k + 1) as f64;
+            }
+            cur.emit(t0, t, rpm, si);
+        }
+        t = section_start + (k + 1) as f64;
+    }
 }
 
 #[cfg(test)]
@@ -268,9 +357,15 @@ mod tests {
     use super::*;
     use crate::design::Section;
 
+    fn strat_helix(turns: u32, tpl: f64) -> Design {
+        let mut d = Design::example("strat").unwrap();
+        d.sections = vec![Section::helix(turns, tpl)];
+        d
+    }
+
     fn strat_layer(turns: u32) -> Design {
         let mut d = Design::example("strat").unwrap();
-        d.sections = vec![Section::layer(turns, 1.0)];
+        d.sections = vec![Section::layer(turns)];
         d
     }
 
@@ -284,25 +379,48 @@ mod tests {
     }
 
     #[test]
-    fn layer_pattern_lays_one_wire_per_turn() {
-        let d = strat_layer(1000);
+    fn helix_crosses_the_window_in_tpl_turns() {
+        let tpl = 100.0;
+        let d = strat_helix(1000, tpl);
         let tp = generate(&d).unwrap();
         let od: f64 = 0.071;
         let (lo, hi) = (od / 2.0, 11.0 - od / 2.0);
-        // Window / pitch = turns per pass.
-        let per_pass = (hi - lo) / od;
+        let pitch = (hi - lo) / tpl;
         let st = tp.stats();
-        assert_eq!(st.passes, (1000.0 / per_pass).ceil() as u32);
+        assert_eq!(st.passes, 10);
         assert!((st.min_y_mm - lo).abs() < 1e-9 && (st.max_y_mm - hi).abs() < 1e-9);
         let mut t = 0.0;
         let mut y = tp.start_y_mm;
         for m in tp.moves() {
             let dy = (m.y_mm - y).abs();
             let dt = m.turns - t;
-            assert!((dy - od * dt).abs() < 1e-9, "pitch drift at {}", m.turns);
+            assert!((dy - pitch * dt).abs() < 1e-9, "pitch drift at {}", m.turns);
             t = m.turns;
             y = m.y_mm;
         }
+    }
+
+    #[test]
+    fn layer_steps_one_wire_then_holds() {
+        let d = strat_layer(400);
+        let tp = generate(&d).unwrap();
+        let od: f64 = 0.071;
+        let per_layer = ((11.0 - od) / od + 0.5).floor();
+        let f = 16.0 / 124.0;
+        let moves: Vec<_> = tp.moves().collect();
+        // Turn 1 sits at the edge; every later turn is a step then a hold.
+        assert_eq!(moves[0].turns, 1.0);
+        let (step, hold) = (moves[1], moves[2]);
+        assert!((step.turns - (1.0 + f)).abs() < 1e-9);
+        assert!((step.y_mm - (od / 2.0 + od)).abs() < 1e-9);
+        assert_eq!((hold.turns, hold.y_mm), (2.0, step.y_mm));
+        // The first layer tops out one wire short of a full window, the climb
+        // adds half a wire, and the second layer comes back half a wire in.
+        let top = tp.stats().max_y_mm;
+        assert!((top - (od / 2.0 + (per_layer - 0.5) * od)).abs() < 1e-9);
+        assert!(top <= 11.0 - od / 2.0 + 1e-9);
+        assert_eq!(tp.stats().passes, (400.0 / per_layer).ceil() as u32);
+        assert_eq!(tp.stats().turns, 400.0);
     }
 
     #[test]
@@ -334,7 +452,7 @@ mod tests {
 
     #[test]
     fn ramps_up_and_down() {
-        let d = strat_layer(1000);
+        let d = strat_helix(1000, 120.0);
         let tp = generate(&d).unwrap();
         let moves: Vec<_> = tp.moves().collect();
         assert!(moves[0].rpm < 70.0);
@@ -344,7 +462,7 @@ mod tests {
 
     #[test]
     fn dwell_holds_the_guide_at_reversals() {
-        let mut d = strat_layer(400);
+        let mut d = strat_helix(400, 120.0);
         d.sections[0].dwell_turns = 2.0;
         let tp = generate(&d).unwrap();
         let held = tp

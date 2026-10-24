@@ -49,6 +49,9 @@ enum Cmd {
         /// Draw only the first N turns.
         #[arg(long)]
         turns: Option<u32>,
+        /// Cut through a short end instead of the middle of a long side.
+        #[arg(long)]
+        end: bool,
     },
     /// Write the default machine profile and the GRBL settings it expects.
     Machine {
@@ -121,18 +124,29 @@ fn run(cmd: Cmd) -> Res {
             }
             Ok(())
         }
-        Cmd::Preview { design, out, turns } => {
+        Cmd::Preview {
+            design,
+            out,
+            turns,
+            end,
+        } => {
             let d = load(&design)?;
             let tp = generate(&d).map_err(|e| e.to_string())?;
             let cs = CrossSection::build(&d, &tp, &d.wire_spec().map_err(|e| e.to_string())?);
             let out = out.unwrap_or_else(|| design.with_extension("svg"));
-            let n = turns.map_or(cs.turns.len(), |t| t as usize);
-            fs::write(&out, svg(&d, &cs, n)).map_err(|e| format!("{}: {e}", out.display()))?;
+            let n = turns.map_or(cs.turn_count(), |t| t as usize);
+            let station = if end {
+                cs.end_station()
+            } else {
+                cs.side_station()
+            };
+            fs::write(&out, svg(&d, &cs, station, n))
+                .map_err(|e| format!("{}: {e}", out.display()))?;
             println!(
-                "wrote {}: build {:.2} mm (mean {:.2}), {:.0} m, {:.2} kOhm from the lay",
+                "wrote {} ({}): build here {:.2} mm, {:.0} m, {:.2} kOhm from the lay",
                 out.display(),
-                cs.build_mm(),
-                cs.mean_build_mm(),
+                cs.stations[station].label(),
+                cs.build_at(station, n),
                 cs.length_m(),
                 cs.dcr_kohm(d.estimate.temp_c)
             );
@@ -176,6 +190,7 @@ fn sim(d: &Design) -> Res {
         wire.name,
         d.direction.label()
     );
+    println!("  layer model (assumes perfect layers):");
     println!(
         "  DCR {:.2} kOhm at {:.0} C   wire {:.0} m ({:.0} ft)",
         e.dcr_kohm,
@@ -210,14 +225,22 @@ fn sim(d: &Design) -> Res {
         st.minutes
     );
     let tp = generate(d).map_err(|e| e.to_string())?;
-    let cs = CrossSection::build(d, &tp, &wire);
+    let l = CrossSection::build(d, &tp, &wire).laid(d);
     println!(
-        "  from the lay: build {:.2} mm (mean {:.2}), wire {:.0} m, DCR {:.2} kOhm",
-        cs.build_mm(),
-        cs.mean_build_mm(),
-        cs.length_m(),
-        cs.dcr_kohm(d.estimate.temp_c)
+        "  from the lay: DCR {:.2} kOhm, wire {:.0} m, build {:.2} mm long side / {:.2} short end, fill {:.0} %",
+        l.dcr_kohm,
+        l.length_m,
+        l.side_build_mm,
+        l.end_build_mm,
+        l.fill_factor * 100.0
     );
+    println!(
+        "                L {:.2} H   self-C {:.0} pF   resonance {:.1} kHz   Q {:.1}",
+        l.inductance_h, l.cap_pf, l.resonance_khz, l.q_factor
+    );
+    if l.build_mm > d.bobbin.build_depth_mm {
+        println!("  warning: the laid coil is deeper than the bobbin allows");
+    }
     println!("  (DCR, L and C are estimates; log measured coils to calibrate them)");
     Ok(())
 }
@@ -259,9 +282,12 @@ fn slug(name: &str) -> String {
 
 /// Cross-section as SVG: the channel between the flanges, the core along
 /// the bottom, one circle per turn shaded from first (dark) to last (light).
-fn svg(d: &Design, cs: &CrossSection, n: usize) -> String {
+fn svg(d: &Design, cs: &CrossSection, station: usize, n: usize) -> String {
     let scale = 60.0; // px per mm
-    let (w_mm, depth) = (cs.channel_mm, d.bobbin.build_depth_mm);
+    let (w_mm, depth) = (
+        cs.channel_mm,
+        d.bobbin.build_depth_mm.max(cs.build_mm() * 1.05),
+    );
     let (pad, flange) = (20.0, 12.0);
     let width = w_mm * scale + 2.0 * (pad + flange);
     let height = depth * scale + 2.0 * pad;
@@ -284,9 +310,9 @@ fn svg(d: &Design, cs: &CrossSection, n: usize) -> String {
         x(w_mm),
         z(0.0),
     );
-    let total = cs.turns.len().max(1) as f64;
+    let total = cs.turn_count().max(1) as f64;
     let r = cs.od_mm / 2.0 * scale;
-    for t in cs.turns.iter().take(n) {
+    for t in cs.cuts[station].iter().take(n) {
         let f = t.n as f64 / total;
         let (cr, cg, cb) = (90.0 + 140.0 * f, 40.0 + 90.0 * f, 18.0 + 40.0 * f);
         s.push_str(&format!(

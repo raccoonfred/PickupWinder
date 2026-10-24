@@ -1,7 +1,7 @@
 # Vintage-style Strat single-coil: clean base, scattered body, clean cover.
 #   winder sim designs/strat-vintage.toml
 #   winder gcode designs/strat-vintage.toml -o strat.nc
-version = 1
+version = 2
 name = "Vintage Strat"
 wire = "42 AWG"            # or a [wire] table with name, od_mm, bare_mm, ohm_per_m
 direction = "cw"           # cw | ccw (seen from the front of the bobbin)
@@ -24,16 +24,25 @@ scatter = 12
 tension_g = 35             # leave out to use `pack` directly
 temp_c = 20
 
-# Pitches are in wire diameters per turn: 1.0 lays each turn beside the last.
+# How the wire travels from the guide to the coil.
+[lay]
+free_span_mm = 25          # guide eye to where the wire meets the coil
+
+# Patterns are set the way real winders are: turns per pass (tpl), the turns
+# the spindle makes while the guide crosses the window once. 42 AWG lies side
+# by side at about 154 on this bobbin; lower numbers cross the wire.
+#   layer:   perfect layers, the guide steps one wire per turn
+#   helix:   a fixed traverse ratio, like a geared or cam machine
+#   scatter: a new turns-per-pass and reversal point for every pass
 [[sections]]
 turns = 200
-pattern = { kind = "layer", pitch_od = 1.0 }
+pattern = { kind = "layer" }
 
 [[sections]]
 turns = 7600
-pattern = { kind = "scatter", pitch_min_od = 1.2, pitch_max_od = 1.8, inset_max_mm = 0.3, seed = 1234 }
+pattern = { kind = "scatter", tpl_min = 85, tpl_max = 130, reversal_jitter_mm = 0.3, seed = 1234 }
 dwell_turns = 0.5          # turns laid in place at each reversal
 
 [[sections]]
 turns = 200
-pattern = { kind = "layer", pitch_od = 1.0 }
+pattern = { kind = "layer" }

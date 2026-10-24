@@ -22,7 +22,7 @@ pub mod wire;
 
 pub use bobbin::Bobbin;
 pub use design::{Design, DesignError, Direction, Pattern, Section};
-pub use lay::CrossSection;
+pub use lay::{CrossSection, Laid, LaySettings};
 pub use physics::{Estimate, EstimateInput, estimate};
 pub use toolpath::{Move, Step, Toolpath, generate};
 pub use wire::WireSpec;

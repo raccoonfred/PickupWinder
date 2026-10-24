@@ -4,6 +4,7 @@
 
 use crate::{
     bobbin::Bobbin,
+    lay::LaySettings,
     physics::EstimateInput,
     wire::{WireRef, WireSpec},
 };
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Current design file version.
-pub const DESIGN_VERSION: u32 = 1;
+pub const DESIGN_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +31,9 @@ pub struct Design {
     /// Inputs to the DCR/tone estimate that the toolpath does not decide.
     #[serde(default)]
     pub estimate: EstimateInput,
+    /// How the wire behaves between the guide and the coil.
+    #[serde(default)]
+    pub lay: LaySettings,
     pub sections: Vec<Section>,
 }
 
@@ -88,6 +92,7 @@ pub struct Section {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub inset_end_mm: f64,
     /// Turns laid in place at each reversal, before the guide heads back.
+    /// Not used by the `layer` pattern, which climbs instead.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub dwell_turns: f64,
     /// Pause the machine after this section with this message, e.g. to
@@ -100,21 +105,38 @@ fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
-/// How the guide moves while the spindle turns. Pitches are in wire
-/// diameters per turn: 1.0 lays each turn right beside the last.
+/// How the guide moves while the spindle turns.
+///
+/// Real winders are set by turns per pass ("turns per layer", TPL): how many
+/// turns the spindle makes while the guide crosses from one edge of the
+/// window to the other. On a geared or cam machine that is the gear ratio.
+/// The pitch follows from it: window / TPL. Pickups are usually wound at
+/// 50-200 TPL, which puts the pitch above one wire diameter, so each pass
+/// crosses the one below instead of lying in its grooves.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pattern {
-    /// Even layers, reversing exactly at the window edges.
-    Layer { pitch_od: f64 },
-    /// Each pass draws its own pitch and its own reversal points from a
-    /// seeded random stream: hand-wound character, but repeatable.
+    /// Perfect layers: turns side by side, each layer in the grooves of the
+    /// one below. The guide holds still for most of the turn and steps one
+    /// wire diameter in a short step zone, then climbs half a wire at each
+    /// flange (orthocyclic winding).
+    Layer {
+        /// Share of each turn the step takes, starting where the wire runs
+        /// onto the first short end. Default: the short end itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_fraction: Option<f64>,
+    },
+    /// A fixed traverse ratio, like a geared or cam-driven machine: the guide
+    /// moves steadily and reverses at the window edges.
+    Helix { tpl: f64 },
+    /// Hand-guided character: each pass draws its own turns per pass and its
+    /// own reversal points from a seeded random stream, so it repeats.
     Scatter {
-        pitch_min_od: f64,
-        pitch_max_od: f64,
+        tpl_min: f64,
+        tpl_max: f64,
         /// Each reversal lands up to this far inside the window edge (mm).
         #[serde(default)]
-        inset_max_mm: f64,
+        reversal_jitter_mm: f64,
         seed: u64,
     },
 }
@@ -123,6 +145,7 @@ impl Pattern {
     pub fn label(&self) -> &'static str {
         match self {
             Pattern::Layer { .. } => "layer",
+            Pattern::Helix { .. } => "helix",
             Pattern::Scatter { .. } => "scatter",
         }
     }
@@ -143,8 +166,15 @@ pub enum DesignError {
 }
 
 impl Design {
+    /// Reads a design. Version 1 files (pitch in wire diameters) are
+    /// converted to turns per pass on the way in.
     pub fn from_toml(text: &str) -> Result<Design, DesignError> {
-        let d: Design = toml::from_str(text).map_err(|e| DesignError::Parse(e.to_string()))?;
+        let parse = |e: toml::de::Error| DesignError::Parse(e.to_string());
+        let mut table: toml::Table = toml::from_str(text).map_err(parse)?;
+        if table.get("version").and_then(toml::Value::as_integer) == Some(1) {
+            migrate_v1(&mut table)?;
+        }
+        let d: Design = table.try_into().map_err(parse)?;
         d.validate()?;
         Ok(d)
     }
@@ -196,6 +226,9 @@ impl Design {
                 "speed: rpm and ramp_start_rpm must be positive, ramp_turns not negative".into(),
             );
         }
+        if !(self.lay.free_span_mm >= 0.0 && self.lay.free_span_mm.is_finite()) {
+            return bad("lay.free_span_mm can't be negative".into());
+        }
         if self.sections.is_empty() {
             return bad("a design needs at least one section".into());
         }
@@ -213,27 +246,31 @@ impl Design {
                 ));
             }
             let extra = match &s.pattern {
-                Pattern::Layer { pitch_od } => {
-                    if !(*pitch_od > 0.0) {
-                        return bad(format!("section {n}: pitch_od must be positive"));
+                Pattern::Layer { step_fraction } => {
+                    if step_fraction.is_some_and(|f| !(f > 0.0 && f <= 1.0)) {
+                        return bad(format!("section {n}: step_fraction must be in (0, 1]"));
+                    }
+                    0.0
+                }
+                Pattern::Helix { tpl } => {
+                    if !(*tpl >= 1.0 && tpl.is_finite()) {
+                        return bad(format!("section {n}: tpl must be at least 1"));
                     }
                     0.0
                 }
                 Pattern::Scatter {
-                    pitch_min_od,
-                    pitch_max_od,
-                    inset_max_mm,
+                    tpl_min,
+                    tpl_max,
+                    reversal_jitter_mm,
                     ..
                 } => {
-                    if !(*pitch_min_od > 0.0 && pitch_max_od >= pitch_min_od) {
-                        return bad(format!(
-                            "section {n}: need 0 < pitch_min_od <= pitch_max_od"
-                        ));
+                    if !(*tpl_min >= 1.0 && tpl_max >= tpl_min && tpl_max.is_finite()) {
+                        return bad(format!("section {n}: need 1 <= tpl_min <= tpl_max"));
                     }
-                    if *inset_max_mm < 0.0 {
-                        return bad(format!("section {n}: inset_max_mm can't be negative"));
+                    if *reversal_jitter_mm < 0.0 {
+                        return bad(format!("section {n}: reversal_jitter_mm can't be negative"));
                     }
-                    2.0 * inset_max_mm
+                    2.0 * reversal_jitter_mm
                 }
             };
             // The window must still hold a couple of wires at its narrowest.
@@ -256,11 +293,14 @@ impl Design {
         } else {
             8000
         };
+        // Side-by-side turns per pass for 42 AWG; the scatter body runs at
+        // 55-85 % of that, about 85-130 TPL on a Strat.
+        let full = bobbin.channel_height_mm / 0.071;
         let cover = 200;
         Some(Design {
             version: DESIGN_VERSION,
             name: format!("{preset} example"),
-            notes: "Clean base layer, scattered body, clean cover layer.".into(),
+            notes: "Perfect-layer base, scattered body, perfect-layer cover.".into(),
             wire: WireRef::Named("42 AWG".into()),
             direction: Direction::Cw,
             bobbin,
@@ -269,28 +309,48 @@ impl Design {
                 scatter: 12.0,
                 ..Default::default()
             },
+            lay: LaySettings::default(),
             sections: vec![
-                Section::layer(cover, 1.0),
+                Section::layer(cover),
                 Section {
                     pattern: Pattern::Scatter {
-                        pitch_min_od: 1.2,
-                        pitch_max_od: 1.8,
-                        inset_max_mm: 0.3,
+                        tpl_min: (full * 0.55).round(),
+                        tpl_max: (full * 0.85).round(),
+                        reversal_jitter_mm: 0.3,
                         seed: 1234,
                     },
-                    ..Section::layer(turns - 2 * cover, 1.0)
+                    ..Section::layer(turns - 2 * cover)
                 },
-                Section::layer(cover, 1.0),
+                Section::layer(cover),
             ],
         })
+    }
+
+    /// Width the guide sweeps for a section, between wire centres (mm).
+    pub fn window_mm(&self, s: &Section, od_mm: f64) -> f64 {
+        self.bobbin.channel_height_mm - s.inset_start_mm - s.inset_end_mm - od_mm
     }
 }
 
 impl Section {
-    pub fn layer(turns: u32, pitch_od: f64) -> Section {
+    /// A perfect-layer section with the default step zone.
+    pub fn layer(turns: u32) -> Section {
+        Section::with(
+            turns,
+            Pattern::Layer {
+                step_fraction: None,
+            },
+        )
+    }
+
+    pub fn helix(turns: u32, tpl: f64) -> Section {
+        Section::with(turns, Pattern::Helix { tpl })
+    }
+
+    pub fn with(turns: u32, pattern: Pattern) -> Section {
         Section {
             turns,
-            pattern: Pattern::Layer { pitch_od },
+            pattern,
             rpm: None,
             inset_start_mm: 0.0,
             inset_end_mm: 0.0,
@@ -298,6 +358,68 @@ impl Section {
             stop_after: None,
         }
     }
+}
+
+/// Version 1 gave pitch in wire diameters per turn. The same guide motion
+/// is a turns-per-pass figure over that section's window, so convert it.
+fn migrate_v1(table: &mut toml::Table) -> Result<(), DesignError> {
+    let parse = |e: toml::de::Error| DesignError::Parse(e.to_string());
+    let wire: WireRef = table
+        .get("wire")
+        .cloned()
+        .ok_or_else(|| DesignError::Parse("missing wire".into()))?
+        .try_into()
+        .map_err(parse)?;
+    let od = wire
+        .resolve()
+        .map(|w| w.od_mm)
+        .ok_or_else(|| DesignError::UnknownWire(format!("{wire:?}")))?;
+    let channel = table
+        .get("bobbin")
+        .and_then(|b| b.get("channel_height_mm"))
+        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+        .ok_or_else(|| DesignError::Parse("missing bobbin.channel_height_mm".into()))?;
+    let f = |t: &toml::Table, k: &str| {
+        t.get(k)
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+    };
+    if let Some(sections) = table.get_mut("sections").and_then(|v| v.as_array_mut()) {
+        for s in sections.iter_mut().filter_map(|s| s.as_table_mut()) {
+            let window = channel
+                - f(s, "inset_start_mm").unwrap_or(0.0)
+                - f(s, "inset_end_mm").unwrap_or(0.0)
+                - od;
+            let tpl = |pitch_od: f64| (window / (pitch_od * od)).max(1.0);
+            let Some(p) = s.get_mut("pattern").and_then(|p| p.as_table_mut()) else {
+                continue;
+            };
+            let mut out = toml::Table::new();
+            match p.get("kind").and_then(toml::Value::as_str) {
+                Some("layer") => {
+                    out.insert("kind".into(), "helix".into());
+                    out.insert("tpl".into(), tpl(f(p, "pitch_od").unwrap_or(1.0)).into());
+                }
+                Some("scatter") => {
+                    let lo = f(p, "pitch_min_od").unwrap_or(1.0);
+                    let hi = f(p, "pitch_max_od").unwrap_or(lo);
+                    out.insert("kind".into(), "scatter".into());
+                    out.insert("tpl_min".into(), tpl(hi).into());
+                    out.insert("tpl_max".into(), tpl(lo).into());
+                    out.insert(
+                        "reversal_jitter_mm".into(),
+                        f(p, "inset_max_mm").unwrap_or(0.0).into(),
+                    );
+                    if let Some(seed) = p.get("seed") {
+                        out.insert("seed".into(), seed.clone());
+                    }
+                }
+                _ => continue,
+            }
+            *p = out;
+        }
+    }
+    table.insert("version".into(), (DESIGN_VERSION as i64).into());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -344,7 +466,7 @@ mod tests {
     #[test]
     fn minimal_design_with_custom_wire() {
         let text = r#"
-version = 1
+version = 2
 name = "heavy formvar test"
 
 [wire]
@@ -361,11 +483,53 @@ build_depth_mm = 6.0
 
 [[sections]]
 turns = 8000
-pattern = { kind = "layer", pitch_od = 1.0 }
+pattern = { kind = "helix", tpl = 120 }
 "#;
         let d = Design::from_toml(text).unwrap();
         assert_eq!(d.wire_spec().unwrap().od_mm, 0.074);
         assert_eq!(d.speed, Speed::default());
         assert_eq!(d.direction, Direction::Cw);
+    }
+
+    #[test]
+    fn reads_version_1_files_as_turns_per_pass() {
+        let text = r#"
+version = 1
+name = "old"
+wire = "42 AWG"
+
+[bobbin]
+channel_height_mm = 11.0
+core_width_mm = 16.0
+core_length_mm = 46.0
+build_depth_mm = 6.0
+
+[[sections]]
+turns = 200
+pattern = { kind = "layer", pitch_od = 1.0 }
+
+[[sections]]
+turns = 7600
+pattern = { kind = "scatter", pitch_min_od = 1.2, pitch_max_od = 1.8, inset_max_mm = 0.3, seed = 9 }
+"#;
+        let d = Design::from_toml(text).unwrap();
+        assert_eq!(d.version, DESIGN_VERSION);
+        let w = 11.0 - 0.071;
+        let Pattern::Helix { tpl } = d.sections[0].pattern else {
+            panic!("{:?}", d.sections[0].pattern)
+        };
+        assert!((tpl - w / 0.071).abs() < 1e-9);
+        let Pattern::Scatter {
+            tpl_min,
+            tpl_max,
+            reversal_jitter_mm,
+            seed,
+        } = d.sections[1].pattern
+        else {
+            panic!()
+        };
+        assert!((tpl_min - w / (1.8 * 0.071)).abs() < 1e-9);
+        assert!((tpl_max - w / (1.2 * 0.071)).abs() < 1e-9);
+        assert_eq!((reversal_jitter_mm, seed), (0.3, 9));
     }
 }

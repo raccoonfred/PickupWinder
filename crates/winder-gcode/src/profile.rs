@@ -52,6 +52,13 @@ impl MachineProfile {
             // Max rates (units/min): turns/min for X, mm/min for Y.
             format!("$110={}", self.max_rpm),
             "$111=600".into(),
+            // Accelerations (units/s²) and junction deviation. GRBL's default
+            // of 10 would slow the spindle to about 100 RPM at every step of
+            // a perfect layer, where the guide starts and stops each turn;
+            // these keep the junction speed above the winding speed.
+            "$120=200".into(),
+            "$121=200".into(),
+            "$11=0.02".into(),
             // Keep drivers energized after moves so a feed hold keeps tension.
             "$1=255".into(),
         ]

@@ -193,7 +193,7 @@ mod tests {
                 "G92 X0 Y0",
                 "G0 Y0.0355",
                 "G93",
-                "G1 X1 Y0.1065 F63.6"
+                "G1 X1 Y0.0355 F63.6"
             ]
         );
         assert!(g.contains("\nM0 (tap)\n; section 2: scatter, 7600 turns\nG92 X0\n"));
