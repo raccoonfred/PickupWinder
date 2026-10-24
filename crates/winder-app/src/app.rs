@@ -3,10 +3,14 @@
 use crate::{
     editor,
     model::{self, Computed},
+    view3d,
     views::{self, Coloring, View},
 };
 use eframe::egui::{self, Color32, RichText, Ui};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use winder_core::{Bobbin, Design, recipe};
 use winder_gcode::MachineProfile;
 
@@ -25,6 +29,9 @@ pub struct WinderApp {
     status: String,
     view: View,
     coloring: Coloring,
+    camera: view3d::Camera,
+    /// The 3D view's GPU side; None without OpenGL 3.
+    renderer: Option<Arc<Mutex<view3d::Renderer>>>,
     /// Cut through the long side (true) or the short end.
     long_side: bool,
     /// Turns shown; follows the end of the coil unless scrubbed or playing.
@@ -48,8 +55,14 @@ impl WinderApp {
             computed: None,
             error: None,
             status: "New design from the Strat preset.".into(),
-            view: View::CrossSection,
+            view: View::Coil3d,
             coloring: Coloring::Order,
+            camera: view3d::Camera::default(),
+            renderer: cc
+                .gl
+                .as_ref()
+                .and_then(|gl| view3d::Renderer::new(gl).ok())
+                .map(|r| Arc::new(Mutex::new(r))),
             long_side: true,
             scrub: 0.0,
             follow_end: true,
@@ -78,6 +91,10 @@ impl WinderApp {
         match Computed::new(&self.design) {
             Ok(c) => {
                 self.error = None;
+                if let Some(r) = &self.renderer {
+                    let g = view3d::Geometry::build(&self.design, &c);
+                    r.lock().expect("renderer lock").set(g);
+                }
                 self.computed = Some((self.design.clone(), c));
             }
             // Keep showing the last good design while this one is invalid.
@@ -312,10 +329,11 @@ impl WinderApp {
 
     fn view_toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view, View::Coil3d, "Coil 3D");
             ui.selectable_value(&mut self.view, View::CrossSection, "Cross-section");
             ui.selectable_value(&mut self.view, View::Lay, "Lay plot");
             ui.selectable_value(&mut self.view, View::Build, "Build profile");
-            if self.view != View::Lay {
+            if matches!(self.view, View::CrossSection | View::Build) {
                 ui.separator();
                 ui.label("Cut through");
                 ui.selectable_value(&mut self.long_side, true, "long side")
@@ -451,6 +469,14 @@ impl eframe::App for WinderApp {
                     c.cross.end_station()
                 };
                 match self.view {
+                    View::Coil3d => view3d::coil_3d(
+                        ui,
+                        shown,
+                        c,
+                        upto,
+                        &mut self.camera,
+                        self.renderer.as_ref(),
+                    ),
                     View::CrossSection => {
                         views::cross_section(ui, shown, c, station, upto, self.coloring)
                     }

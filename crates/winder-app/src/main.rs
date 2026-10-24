@@ -1,12 +1,13 @@
 //! Pickup Winder design editor.
 //!
-//! Edit a coil design on the left, watch every turn land in the
-//! cross-section in the middle, read the estimates and export verified
-//! G-code on the right.
+//! Edit a coil design on the left, watch the coil wind in 3D (or cut
+//! through it) in the middle, read the estimates and export verified G-code
+//! on the right.
 
 mod app;
 mod editor;
 mod model;
+mod view3d;
 mod views;
 
 fn main() -> eframe::Result {
@@ -16,6 +17,8 @@ fn main() -> eframe::Result {
             .with_title("Pickup Winder")
             .with_inner_size([1360.0, 820.0])
             .with_min_inner_size([900.0, 560.0]),
+        // The 3D coil view needs a depth buffer.
+        depth_buffer: 24,
         ..Default::default()
     };
     eframe::run_native(

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The coil is shown in 3D.** The editor's main view now draws the bobbin
+  and the whole wire as one continuous copper strand, every turn where the
+  lay model put it, with OpenGL and a depth buffer. Orbit, pan and zoom down
+  to single wires; playback shows the newest turns and the guide with its
+  free span. The dot cross-section is now a secondary view.
 - **Winding model rebuilt to match real machines** (see
   `docs/WINDING_MODEL.md`). Patterns are now set by turns per pass, as
   geared, cam and CNC pickup winders are: `layer` (perfect layers, with a

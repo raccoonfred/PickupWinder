@@ -83,6 +83,11 @@ cargo run --release -p winder-app -- designs/strat-vintage.toml
 Edit the bobbin, wire, speed and the stack of winding sections on the left.
 The middle shows the result, recomputed as you type:
 
+- **Coil 3D** (the default): the bobbin and its flatwork, with every turn
+  drawn as round copper wire around the core, exactly where the lay model
+  put it. Drag to turn it, right-drag to move, scroll to zoom right down onto
+  the wire; the top flange can be hidden. While playing, the newest turns
+  glow and the guide is shown with the free wire running to the coil.
 - **Cross-section**: every turn where it lands, cut through the middle of a
   long side or through a short end, coloured by turn order or by section.
   Hover a wire to see its turn number. Wire is pressed into its grooves on

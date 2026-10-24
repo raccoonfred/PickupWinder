@@ -6,6 +6,7 @@ use winder_core::Design;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    Coil3d,
     CrossSection,
     Lay,
     Build,
