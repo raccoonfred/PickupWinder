@@ -1,0 +1,31 @@
+ref,group,part,spec,qty,unit_lei,line_lei,where_to_buy
+1,Motion and electronics,"Stepper, spindle","NEMA 17, 1.5-1.7 A, 48 mm, 5 mm shaft",1,55,55,"Optimus Digital, Sigma Nortec"
+2,Motion and electronics,"Stepper, traverse","NEMA 17, 1.5-1.7 A, 40-48 mm",1,50,50,"Optimus Digital, Sigma Nortec"
+3,Motion and electronics,Arduino Uno + CNC Shield v3,flash GRBL 1.1h; Uno already on hand,1,30,30,"Optimus Digital, Robofun"
+,Motion and electronics,A4988 driver,with heatsink; one spare,3,10,30,Optimus Digital
+4,Motion and electronics,Power supply,24 V 5 A enclosed (LRS-100-24 type),1,75,75,"Sigma Nortec, TME"
+5,Motion and electronics,Enclosure + controls,"ABS box ~150×100×60, 22 mm E-stop, green button, fan 40 mm",1,55,55,"Sigma Nortec, eMAG"
+6,Motion and electronics,Foot pedal,momentary NO foot switch,1,25,25,"eMAG, Sigma Nortec"
+,Motion and electronics,Wiring,"USB-B cable, 2× 1 m 4-wire motor leads, JST/dupont, 22 AWG",1,25,25,Optimus Digital
+7,Spindle,Spindle deck,110×110×6 mm aluminium plate (or 8 mm ply),1,30,30,"local metal shop, AliExpress"
+,Spindle,Standoffs,"M4 × 84 mm (4), M3 × 20 mm motor spacers (4)",1,25,25,"Optimus Digital, Dedeman"
+8,Spindle,Spindle bearings,KFL08 flange bearing + 608ZZ in the deck,1,20,20,"Optimus Digital, AliExpress"
+,Spindle,Spindle shaft,"8 mm hardened rod, 100 mm",1,15,15,Optimus Digital
+9,Spindle,Flexible couplers,"5 → 8 mm jaw or beam, spindle and lead screw",2,10,20,Optimus Digital
+10,Spindle,Platen,70×6 mm aluminium disc on an 8 mm rigid flange coupling,1,40,40,"AliExpress, local machinist"
+11,Spindle,Bobbin nests,"printed PETG: Strat, Tele, PAF, P-90; M4 knurled clamp knob",1,20,20,print at home or a print service
+12,Traverse,Column + mast extrusion,"2020 aluminium, 300 mm + 400 mm + 250 mm arm",1,45,45,"Optimus Digital, AliExpress"
+,Traverse,Brackets and T-nuts,"2020 corner brackets (8), M5 T-nuts and screws",1,25,25,Optimus Digital
+13,Traverse,Linear rail,"MGN12H, 200 mm, one block",1,70,70,AliExpress
+14,Traverse,Lead screw,"T8 × 8 mm lead (4-start), 200 mm, anti-backlash nut",1,35,35,"Optimus Digital, AliExpress"
+,Traverse,Lead screw top bearing,KFL08 + printed or angle bracket,1,12,12,Optimus Digital
+15,Traverse,Carriage plate + guide arm,60×50×5 mm aluminium or PETG; 3×15 mm aluminium flat bar arm,1,20,20,"Dedeman (flat bar), print"
+16,Traverse,Ceramic wire guides,"eyelets and pigtails, 1-2 mm bore (5)",1,25,25,AliExpress (textile wire guides)
+17,Traverse,Homing switch,"KW12 microswitch, NO, on a slotted bracket",1,5,5,Optimus Digital
+18,Wire path and frame,Felt tensioner,"2 felt pads, compression spring, M5 thumb screw",1,15,15,"Dedeman, craft shop"
+19,Wire path and frame,Dancer arm,spring-loaded arm with a ceramic eyelet,1,15,15,DIY from flat bar + spring
+20,Wire path and frame,Spool holder,"10 mm dowel post, wire pulled over the spool end",1,5,5,Dedeman
+21,Wire path and frame,Baseboard,"18 mm birch ply 380×260, 4 rubber feet",1,35,35,"Dedeman, Leroy Merlin"
+,Wire path and frame,Screws and nuts,"M3, M4, M5 assortment, wood screws",1,30,30,Dedeman
+22,Consumable,Magnet wire,"42 AWG plain enamel, ~0.5 kg",1,100,100,"AliExpress, eBay (pickup wire)"
+,,Machine total without wire,,,,852,

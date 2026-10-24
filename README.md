@@ -22,6 +22,8 @@ pickup-winder/
 ├── firmware/
 │   └── winder_firmware.ino   Arduino Uno sketch
 ├── docs/
+│   ├── MACHINE.md            the CNC winder that runs the G-code (GRBL 1.1)
+│   ├── PARTS.csv             its priced parts list
 │   ├── HARDWARE.md           wiring + parts + budget
 │   ├── BUILD_GUIDE.md        physical assembly
 │   └── PROTOCOL.md           serial command reference

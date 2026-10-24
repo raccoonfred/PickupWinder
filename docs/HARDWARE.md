@@ -1,5 +1,9 @@
 # Hardware
 
+> For the CNC machine that runs the Rust app's G-code (GRBL 1.1), see
+> [`MACHINE.md`](MACHINE.md) and [`PARTS.csv`](PARTS.csv). This page covers
+> the original Python-app build.
+
 ## Parts
 
 | Part                         | Spec / note                          |
@@ -7,7 +11,7 @@
 | Arduino Uno                  | the controller                       |
 | 2x stepper driver            | A4988 or DRV8825                     |
 | 2x NEMA 17 stepper           | spindle + traverse                   |
-| 12V power supply             | 3-5A                                 |
+| 12V or 24V power supply      | 3-5A; 24V for spindle speeds above ~600 RPM |
 | Lead screw + nut             | T8, 8mm pitch (traverse)             |
 | Linear rail or rods          | traverse carriage guide              |
 | Faceplate / chuck            | holds the bobbin on the spindle      |
@@ -21,7 +25,8 @@ Instead of wiring loose A4988 drivers, use an Arduino CNC Shield v3. It
 plugs onto the Uno, the two A4988 drivers slot into the X and Y
 positions, and motor/power connections are screw terminals. The firmware
 pins already match the shield's X/Y mapping, so no code change is needed.
-Set all three microstep jumpers (under each driver) to ON for 1/8 step.
+For 1/8 step fit the MS1 and MS2 jumpers under each driver and leave MS3
+off. (All three fitted is 1/16 on an A4988 and 1/32 on a DRV8825.)
 
 ## Parts list & budget (lei, approximate)
 
