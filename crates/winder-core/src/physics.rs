@@ -72,9 +72,11 @@ pub struct Estimate {
 }
 
 impl Estimate {
-    /// The tension is close enough to breaking to warn about.
+    /// The tension is close enough to breaking to warn about. Guide friction
+    /// and the jerk of wire leaving the spool add to the set tension, so the
+    /// margin starts at 70 % (about 49 g on 42 AWG).
     pub fn break_warning(&self) -> bool {
-        self.break_risk >= 0.85
+        self.break_risk >= 0.7
     }
 }
 

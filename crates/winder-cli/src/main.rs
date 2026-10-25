@@ -7,7 +7,7 @@ use std::{
     process::ExitCode,
 };
 use winder_core::{Bobbin, CrossSection, Design, estimate, generate, recipe};
-use winder_gcode::{MachineProfile, post_grbl, verify};
+use winder_gcode::{MachineProfile, flange_program, post_grbl, probe_ys, solve, verify};
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +58,30 @@ enum Cmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// Find the bobbin's flanges with the feeler on the guide. Without
+    /// --probes, write the probing program; with the [PRB:...] lines it
+    /// reported, write a machine profile with the measured flange offset.
+    Calibrate {
+        design: PathBuf,
+        /// Machine profile TOML (default: Uno + CNC Shield v3 with GRBL 1.1).
+        #[arg(short, long)]
+        machine: Option<PathBuf>,
+        /// Feeler blade thickness along the traverse (mm).
+        #[arg(long, default_value_t = 0.5)]
+        feeler: f64,
+        /// Stop for you to turn the bobbin and swing the feeler, for a
+        /// machine without the feeler solenoid and index sensor.
+        #[arg(long)]
+        manual: bool,
+        /// GRBL's console output from the probing run, or just its three
+        /// [PRB:...] lines.
+        #[arg(long)]
+        probes: Option<String>,
+        /// Output file (default: <design>-flanges.nc, or
+        /// <design>-machine.toml with --probes).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Convert the Python app's winder_recipes.json into design files.
     ImportRecipes {
         json: PathBuf,
@@ -95,12 +119,7 @@ fn run(cmd: Cmd) -> Res {
             machine,
         } => {
             let d = load(&design)?;
-            let profile = match machine {
-                Some(p) => {
-                    toml::from_str(&read(&p)?).map_err(|e| format!("{}: {e}", p.display()))?
-                }
-                None => MachineProfile::default(),
-            };
+            let profile = machine_profile(machine.as_deref())?;
             let tp = generate(&d).map_err(|e| e.to_string())?;
             let g = post_grbl(&d, &tp, &profile).map_err(|e| e.to_string())?;
             let p = verify(&g, &d, &tp, &profile)
@@ -108,6 +127,14 @@ fn run(cmd: Cmd) -> Res {
             let out = out.unwrap_or_else(|| design.with_extension("nc"));
             fs::write(&out, &g).map_err(|e| format!("{}: {e}", out.display()))?;
             let st = tp.stats();
+            let wire = d.wire_spec().map_err(|e| e.to_string())?;
+            let e = estimate(d.total_turns(), &d.bobbin, &wire, &d.estimate);
+            if e.break_warning() {
+                println!(
+                    "warning: tension is {:.0}% of the wire's breaking force; keep it under 70%",
+                    e.break_risk * 100.0
+                );
+            }
             println!(
                 "wrote {}: {} lines, {} turns, {} passes, about {:.1} min (verified)",
                 out.display(),
@@ -162,6 +189,57 @@ fn run(cmd: Cmd) -> Res {
             text.push_str(&toml::to_string_pretty(&p).expect("profile serializes"));
             emit(out.as_deref(), &text)
         }
+        Cmd::Calibrate {
+            design,
+            machine,
+            feeler,
+            manual,
+            probes,
+            out,
+        } => {
+            let d = load(&design)?;
+            let mut profile = machine_profile(machine.as_deref())?;
+            let stem = design.with_extension("");
+            let Some(probes) = probes else {
+                let g = flange_program(&d, &profile, feeler, !manual).map_err(|e| e.to_string())?;
+                let out = out.unwrap_or_else(|| suffixed(&stem, "-flanges.nc"));
+                fs::write(&out, g).map_err(|e| format!("{}: {e}", out.display()))?;
+                println!(
+                    "wrote {}: send it with the bobbin mounted, then run\n  winder calibrate {} --probes \"<GRBL's output>\"",
+                    out.display(),
+                    design.display()
+                );
+                return Ok(());
+            };
+            let c = solve(&probe_ys(&probes), feeler).map_err(|e| e.to_string())?;
+            let h = d.bobbin.channel_height_mm;
+            println!(
+                "flange offset {:.3} mm (was {:.3})\nwindow {:.3} mm (design says {:.3})",
+                c.flange_offset_mm, profile.flange_offset_mm, c.window_mm, h
+            );
+            if (c.window_mm - h).abs() > 0.1 {
+                println!(
+                    "  the window differs from the design by {:+.2} mm: set channel_height_mm = {:.2} in the design",
+                    c.window_mm - h,
+                    c.window_mm
+                );
+            }
+            profile.flange_offset_mm = (c.flange_offset_mm * 1000.0).round() / 1000.0;
+            let out = out.unwrap_or_else(|| suffixed(&stem, "-machine.toml"));
+            let text = format!(
+                "# Calibrated with the flange finder on {}\n{}",
+                d.name,
+                toml::to_string_pretty(&profile).expect("profile serializes")
+            );
+            fs::write(&out, text).map_err(|e| format!("{}: {e}", out.display()))?;
+            println!(
+                "wrote {}: use it with  winder gcode {} -m {}",
+                out.display(),
+                design.display(),
+                out.display()
+            );
+            Ok(())
+        }
         Cmd::ImportRecipes { json, out_dir } => {
             let all = recipe::import_recipes(&read(&json)?).map_err(|e| e.to_string())?;
             fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
@@ -177,6 +255,19 @@ fn run(cmd: Cmd) -> Res {
             Ok(())
         }
     }
+}
+
+fn machine_profile(path: Option<&Path>) -> Result<MachineProfile, String> {
+    match path {
+        Some(p) => toml::from_str(&read(p)?).map_err(|e| format!("{}: {e}", p.display())),
+        None => Ok(MachineProfile::default()),
+    }
+}
+
+fn suffixed(stem: &Path, suffix: &str) -> PathBuf {
+    let mut s = stem.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
 }
 
 fn sim(d: &Design) -> Res {
