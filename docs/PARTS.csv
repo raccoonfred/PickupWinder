@@ -7,18 +7,18 @@ ref,group,part,spec,qty,unit_lei,line_lei,where_to_buy
 5,Motion and electronics,Enclosure + controls,"ABS box ~150×100×60, 22 mm E-stop, green button, 40 mm fan",1,55,55,"Sigma Nortec, eMAG"
 6,Motion and electronics,Foot pedal,momentary NO foot switch,1,25,25,"eMAG, Sigma Nortec"
 ,Motion and electronics,Wiring,"USB-B cable, 2× 1 m 4-wire motor leads, JST/dupont, 22 AWG",1,25,25,Optimus Digital
-7,Headstock (spindle),Headstock frame,"2 side plates 100×95×6 + top plate, aluminium (or 18 mm ply blocks)",1,40,40,"local metal shop, Dedeman"
+7,Headstock (spindle),Headstock frame,"2 side plates 100×65×6 + top plate, aluminium (or 18 mm ply blocks)",1,40,40,"local metal shop, Dedeman"
 8,Headstock (spindle),Pillow blocks,"KP08, 8 mm bore",2,12,24,"Optimus Digital, AliExpress"
 ,Headstock (spindle),Spindle shaft,"8 mm hardened rod, 120 mm",1,15,15,Optimus Digital
 9,Headstock (spindle),Flexible couplers,5 → 8 mm jaw or beam (spindle and lead screw),2,10,20,Optimus Digital
 ,Headstock (spindle),Motor brackets,"NEMA 17 L-brackets, steel",2,10,20,Optimus Digital
 10,Headstock (spindle),Platen,70×6 mm aluminium disc on an 8 mm rigid flange coupling,1,40,40,"AliExpress, local machinist"
 11,Headstock (spindle),Bobbin nests,"printed PETG: Strat, Tele, PAF, P-90; M4 knurled knob",1,20,20,print at home or a print service
-12,Carriage,Rail bed and wire mast,"2020 aluminium: 250 mm bed, 380 mm mast, 230 mm arm",1,40,40,"Optimus Digital, AliExpress"
+12,Carriage,Rail bed,"2020 aluminium, 250 mm, on two 7 mm pads",1,20,20,"Optimus Digital, AliExpress"
 ,Carriage,Brackets and T-nuts,"2020 corner brackets (6), M5 T-nuts and screws",1,25,25,Optimus Digital
 13,Carriage,Linear rail,"MGN12H, 250 mm, one block",1,75,75,AliExpress
 14,Carriage,Lead screw,"T8 × 8 mm lead (4-start), 200 mm, anti-backlash nut, KFL08 end bearing",1,45,45,"Optimus Digital, AliExpress"
-15,Carriage,Carriage plate + guide post,"70×60×6 mm plate, 15×15 mm post 100 mm, 3×15 mm flat bar arm",1,25,25,"Dedeman (flat bar), print"
+15,Carriage,Carriage plate + guide post,"70×60×6 mm plate, 15×15 mm post 26 mm, 3×15 mm flat bar arm",1,25,25,"Dedeman (flat bar), print"
 16,Carriage,Ceramic wire guides,"eyelets and pigtails, 1-2 mm bore (5)",1,25,25,AliExpress (textile wire guides)
 17,Carriage,Homing switch,"KW12 microswitch, NO, on a slotted bracket",1,5,5,Optimus Digital
 18,Calibration,Flange finder,"D2F-L microswitch, 0.5 mm spring-steel blade, printed hinge",1,12,12,"Optimus Digital, hardware store (feeler gauge leaf)"
@@ -30,8 +30,9 @@ ref,group,part,spec,qty,unit_lei,line_lei,where_to_buy
 ,Calibration,Tension gauge,0-100 g pocket spring scale,1,30,30,eMAG
 23,Wire path and frame,Felt tensioner,"2 felt pads, compression spring, M5 thumb screw",1,15,15,"Dedeman, craft shop"
 24,Wire path and frame,Dancer arm,spring-loaded arm with a ceramic eyelet,1,15,15,DIY from flat bar + spring
-25,Wire path and frame,Spool holder,"10 mm dowel post, wire pulled over the spool end",1,5,5,Dedeman
+25,Wire path and frame,Spool holder + pigtail post,"10 mm dowel, 150 mm 12×12 post with an arm over the spool",1,15,15,Dedeman
+,Wire path and frame,Wire-path posts,"two 12×12 mm aluminium posts, 92 mm, for the tensioner and dancer",1,15,15,Dedeman
 26,Wire path and frame,Baseboard,"18 mm birch ply 480×340, 4 rubber feet",1,40,40,"Dedeman, Leroy Merlin"
 ,Wire path and frame,Screws and nuts,"M3, M4, M5 assortment, wood screws",1,30,30,Dedeman
 27,Consumable,Magnet wire,"42 AWG plain enamel, ~0.5 kg",1,100,100,"AliExpress, eBay (pickup wire)"
-,,Machine total without wire,,,,1111,
+,,Machine total without wire,,,,1116,

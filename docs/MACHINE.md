@@ -1,9 +1,12 @@
-# The winding machine (rev B)
+# The winding machine (rev C)
 
 A two-axis CNC coil winder that runs the G-code the Rust app bakes, on stock
 GRBL 1.1 with an Arduino Uno and a CNC Shield v3. It lies flat on the bench
 like a small lathe: the bobbin spins on a horizontal spindle and the guide
-carriage runs along the base beside it. A flange finder on the guide measures
+carriage runs along the base beside it. As on commercial and DIY CNC pickup
+winders, nothing stands tall: the wire leaves a spool on the bench and runs
+level and straight through the tensioner and the guide to the coil, at
+spindle height. A flange finder on the guide measures
 each bobbin on the machine before winding. The priced parts list is in
 [`PARTS.csv`](PARTS.csv). The older [`BUILD_GUIDE.md`](BUILD_GUIDE.md)
 describes the hand-built Python-era machine; where the two differ, follow
@@ -12,12 +15,12 @@ this page.
 ```
  top view (operator at the bottom)
 
-        mast ─── overhead arm: pigtail, felt tensioner, dancer ──┐
-        spool                                                    │ wire drops
-   ┌──────────────────────────────────────────────────────────┐ ▼ to the guide
+   ┌──────────────────────────────────────────────────────────┐
+   │        felt tensioner ─ dancer ─┐     spool + pigtail post │
+   │                                 │ wire, level, 80 high     │
    │ end    ════════ T8 x 8 lead screw ═════════  carriage     │
    │ brg    ════════ MGN12 rail on a 2020 bed ═══ NEMA 17 (Y)  │
-   │   switch ▐▌ carriage: cross-slide, post, arm, eyelet,     │
+   │   switch ▐▌ carriage: pigtail, cross-slide, arm, eyelet,  │
    │             flange finder, laser                          │
    │                   │ eyelet, 48 mm behind the axis          │
    │ NEMA 17 ═ coupler ═ KP08 ══ KP08 ═ platen │bobbin│  ─► +Y │
@@ -117,8 +120,9 @@ along the axis toward the bobbin, z toward the operator.
 - 18 mm birch plywood, 480 × 340, four rubber feet.
 
 ### Headstock (spindle)
-- **Frame:** two 100 × 95 × 6 aluminium side plates and a top plate (or a
-  stack of 18 mm ply), spindle axis 110 above the base.
+- **Frame:** two 100 × 65 × 6 aluminium side plates and a top plate (or a
+  stack of 18 mm ply), spindle axis 80 above the base. Low enough that the
+  guide reaches it on a short post, high enough to clear a P-90's ears.
 - **Bearings:** two KP08 pillow blocks 70 apart on the top plate, 8 mm
   hardened shaft. They take the wire pull and keep the platen true.
 - **Motor:** NEMA 17 on a steel L-bracket behind the headstock, 5 → 8
@@ -135,17 +139,18 @@ turns/s² that needs about 0.05 N·m, a fraction of what a 1.7 A NEMA 17 has
 at 24 V.
 
 ### Carriage (traverse)
-- **Bed:** 2020 extrusion, 250 long, lying on the base 95 behind the spindle
-  axis and parallel to it. Slotted holes let you tram it with the test bar.
+- **Bed:** 2020 extrusion, 250 long, on two 7 mm pads on the base, 95 behind
+  the spindle axis and parallel to it. Rail top at 35. Slotted holes let you tram it with the test bar.
 - **Rail:** MGN12H, 250 long, on top of the bed.
 - **Drive:** NEMA 17 at the far end, 5 → 8 coupler, T8 × 8 (4-start) lead
   screw 30 further back, KFL08 end bearing at the headstock end,
   anti-backlash nut.
 - **Carriage:** 70 × 60 × 6 plate on the rail block and the nut bracket,
-  carrying the cross-slide, a 15 × 15 post, the height clamp and a 3 × 15
-  flat-bar arm to the ceramic eyelet (1-2 mm bore) at axis height, 48 mm
-  behind the axis. A ceramic pigtail at the top of the post takes the wire
-  coming down from above.
+  carrying the cross-slide, a short 15 × 15 post (26 tall), the height clamp
+  and a 3 × 15 flat-bar arm to the ceramic eyelet (1-2 mm bore) at axis
+  height, 48 mm behind the axis. A ceramic pigtail behind the post, also at
+  axis height, takes the wire arriving level from the tensioner, so pigtail,
+  eyelet and coil are in one straight line.
 - **Stroke:** 150. The program only uses the window (a P-90 is about 9.5),
   the rest lets you park the guide clear while changing bobbins.
 - **Homing switch:** KW12 microswitch, normally open, on a slotted bracket at
@@ -154,19 +159,24 @@ at 24 V.
   the switch before a program starts.
 
 ### Wire path
-1. **Spool** standing upright on a 10 mm dowel behind the carriage motor; the
-   wire peels off over the top end, so the spool never spins or overruns.
-2. **Pigtail** on the overhead arm about 290 above the spool, high enough for
-   the balloon to form.
-3. **Felt tensioner:** two felt pads squeezed by a spring and an M5 thumb
-   screw. Start around 30-40 g for 42 AWG and check with the gauge.
-4. **Dancer:** a spring-loaded arm with a ceramic eyelet that soaks up the
-   jerk as the wire leaves the spool.
-5. **Down** to the post's pigtail, through the eyelet, and onto the coil on a
-   tangent.
+Everything sits on the base behind the carriage, and from the tensioner on
+the wire stays at spindle height (80):
 
-The overhead arm is a 230 mm piece of 2020 from the top of a 380 mm mast at
-the back right.
+1. **Spool** standing upright on a 10 mm dowel behind the carriage; the wire
+   peels off over the top end, so the spool never spins or overruns.
+2. **Pigtail** on a 150 mm post with a short arm over the spool, about 65
+   above the spool top, enough for the balloon to form. This is the tallest
+   part of the machine.
+3. **Felt tensioner** on a 92 mm post in line with the middle of the winding
+   window: two felt pads squeezed by a spring and an M5 thumb screw. Start
+   around 30-40 g for 42 AWG and check with the gauge.
+4. **Dancer:** a spring-loaded arm on a second 92 mm post, with a ceramic
+   eyelet at spindle height, that soaks up the jerk as the wire leaves the
+   spool.
+5. **Straight on** through the carriage's rear pigtail and the guide eyelet
+   onto the coil, on a tangent. The carriage only moves across the 6-12 mm
+   window while winding, so the wire's angle from the dancer changes by
+   well under 10 degrees.
 
 ### Electronics
 - Uno + CNC Shield v3 + two A4988 (spare in the drawer) in an ABS box at the
@@ -214,7 +224,7 @@ the back right.
 
 ## Cheaper build
 
-About 800 lei instead of about 1,100 (about 700 if you borrow the dial
+About 820 lei instead of about 1,120 (about 700 if you borrow the dial
 indicator and the spring scale): two 8 mm rods and LM8UU bearings in place
 of the MGN12 rail, PETG for the headstock frame, carriage plate and brackets,
 and a dead 3D printer for both steppers, the lead screw and the supply. Keep
