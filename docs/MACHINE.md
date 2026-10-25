@@ -41,6 +41,8 @@ this page.
 | `G92 X0 Y0`        | Y0 is where the switch trips, about 10 mm short of the near flange's inner face. |
 | `flange_offset_mm` | Switch to the near flange's inner face. The default profile now says 10.0; `winder calibrate` measures it for each bobbin type. |
 | `M0`               | Program pause. Resume from the green button (A2) or the app.            |
+| `M8` / `M9`        | Flood-coolant output (A3): drops and lifts the flange feeler's solenoid. Only the flange finder uses it. |
+| `M3 S1000` / `M5`  | Spindle PWM (D11) at full duty is a steady 5 V that powers the index sensor, only while the flange finder looks for it. |
 | CW / CCW           | The app flips the sign of X. Seen from the bobbin's top (looking at the platen), a CW design turns the platen clockwise; flip `$3` bit 0 if it doesn't. |
 
 ### GRBL settings
@@ -72,7 +74,8 @@ measure the bobbin on the machine:
 
 | System             | What it does                                                        |
 |--------------------|---------------------------------------------------------------------|
-| **Flange finder**  | A 0.5 mm spring-steel blade (a feeler-gauge leaf) on a D2F-L microswitch, hinged under the guide eyelet, in line with it along the traverse. Wired to the probe pin in parallel with the homing switch. Swung down into the window, it touches each flange's inner face. |
+| **Flange finder**  | A 0.5 mm spring-steel blade (a feeler-gauge leaf) on a D2F-L microswitch, hinged under the guide eyelet, in line with it along the traverse. Wired to the probe pin in parallel with the homing switch. A small 12 V push solenoid (on `M8`) swings it down into the window, where it touches each flange's inner face; a return spring lifts it on `M9`. |
+| **Index sensor**   | A 3144 Hall switch over the platen and a magnet in the nest, in line with the bobbin's length. The flange finder spins the platen until the sensor trips, then a quarter turn more, so an end of the bobbin faces the guide. Its output is on the probe pin too; it is powered from D11 so it is only live during that search. |
 | **Guide cross-slide** | A 40 × 40 mm manual stage with a 13 mm micrometer head under the guide post. Sets the eyelet's distance from the coil in 0.01 mm steps (48 mm from the axis nominal). |
 | **Height clamp and scale** | The guide arm clamps to the post with a steel rule beside it. Set the eyelet level with the spindle axis; read the scale to repeat it. |
 | **Laser line**     | A 5 V red line module on the post marks where the wire lands. Use it to check the eyelet lines up with each flange face and to watch the lay. |
@@ -86,12 +89,12 @@ measure the bobbin on the machine:
 winder calibrate strat.toml                 # writes strat-flanges.nc
 ```
 
-Send `strat-flanges.nc` with the bobbin on its nest. It homes, moves the
-guide to the middle of the window, and stops: turn the bobbin so an end
-points at the guide and swing the feeler down. Press resume. It touches the
-near flange, then the far one, slowly (30 mm/min), and GRBL prints three
-lines like `[PRB:0.000,6.250,0.000:1]`. Swing the feeler back up at the last
-stop. Then:
+Send `strat-flanges.nc` with the bobbin on its nest; it needs no hands. It
+homes, moves the guide to the middle of the window, spins the platen to the
+index and a quarter turn on so a bobbin end faces the guide, and drops the
+feeler. It touches the near flange, then the far one, slowly (30 mm/min),
+lifts the feeler and parks. GRBL prints four lines like
+`[PRB:0.000,6.250,0.000:1]` (switch, index, near flange, far flange). Then:
 
 ```
 winder calibrate strat.toml --probes "<paste GRBL's output>"
@@ -106,6 +109,10 @@ inside each flange: offset = near − switch − t/2 and window = far − near +
 If the window differs from the design by more than 0.1 mm the command says
 so; put the measured value in the design's `channel_height_mm`. Keep one
 machine profile per bobbin type (`strat-machine.toml`, `paf-machine.toml`).
+
+Built without the solenoid and index sensor, use `winder calibrate
+--manual`: the program stops (`M0`) for you to turn the bobbin and swing the
+feeler in by hand, then again to swing it out, and reports three lines.
 
 The search starts from the profile's `flange_offset_mm`, so before the first
 run set it to within 2 mm with a ruler. A touch that lands on the homing
@@ -172,11 +179,47 @@ the wire stays at spindle height (80):
    around 30-40 g for 42 AWG and check with the gauge.
 4. **Dancer:** a spring-loaded arm on a second 92 mm post, with a ceramic
    eyelet at spindle height, that soaks up the jerk as the wire leaves the
-   spool.
+   spool. Two microswitches at the ends of its travel are wired to Hold (see
+   below).
 5. **Straight on** through the carriage's rear pigtail and the guide eyelet
    onto the coil, on a tangent. The carriage only moves across the 6-12 mm
    window while winding, so the wire's angle from the dancer changes by
    well under 10 degrees.
+
+### Keeping the wire whole
+42 AWG plain enamel copper breaks at about 70 g; 43 and 44 AWG at about 55
+and 45 g. The design presets wind at half that, and the machine is built so
+the pull at the coil stays close to the set value:
+
+- **Set tension** with the spring scale, 30-40 g for 42 AWG. `winder sim`,
+  `winder gcode` and the editor warn once a design's `tension_g` is over 70 %
+  of the wire's breaking force (about 49 g for 42 AWG): guide friction and
+  spool jerk add to the set value, so that is where breaks start.
+- **No spool inertia:** the spool stands still and the wire peels over its
+  end, so starting and stopping the spindle never yanks a heavy spool round.
+- **Dancer** soaks up the surges from the balloon and from the guide turning
+  round.
+- **Soft starts:** each design ramps the spindle up and down over
+  `ramp_turns` (50 on the Strat preset, from 60 RPM), and GRBL's
+  acceleration limit (`$120`) eases every stop and feed hold.
+- **Smooth path:** only polished ceramic touches the wire, and from the
+  tensioner on it runs straight and level, with no sharp corners.
+- **Snag or break:** the dancer's two end switches sit on Hold, in parallel
+  with the pedal. A snag pulls the arm hard to one stop; a break lets the
+  spring throw it to the other. Either one feed-holds GRBL, so the spindle
+  decelerates and stops with the wire still under tension (`$1=255` keeps
+  the motors energised). Splice or clear it and press resume.
+
+### What is automatic
+Homing, flange calibration (orienting the bobbin, the feeler, both touches)
+and the whole wind with its ramps, pattern, turn count and pauses run on
+their own. By hand, as on commercial winders: mounting the bobbin, threading
+the wire and wrapping the start lead on its eyelet, and cutting, taping and
+soldering the leads afterwards. Once per bobbin type you paste the flange
+finder's result into `winder calibrate --probes` and set the eyelet with the
+height clamp and cross-slide; once per build you tram the rail, set driver
+current and set the tension. When the app streams to GRBL itself (milestone
+3) it can read the probe results directly.
 
 ### Electronics
 - Uno + CNC Shield v3 + two A4988 (spare in the drawer) in an ABS box at the
@@ -194,11 +237,13 @@ the wire stays at spindle height (80):
 | X motor header   | D2, D5  | spindle motor                                        |
 | Y motor header   | D3, D6  | carriage motor                                       |
 | Abort            | A0      | E-stop, normally-open contact, to GND                |
-| Hold             | A1      | foot pedal (momentary NO), to GND                    |
+| Hold             | A1      | foot pedal and both dancer end switches (all NO, in parallel), to GND |
 | Resume           | A2      | green button (momentary NO), to GND                  |
-| SCL              | A5      | homing switch **and** flange feeler, both NO, in parallel, to GND |
+| CoolEn           | A3      | gate of a logic-level MOSFET (IRLZ44N, 10 k pull-down) switching the 12 V feeler solenoid, with a flyback diode |
+| SCL              | A5      | homing switch, flange feeler and index Hall output, all open-drain/NO, in parallel, to GND |
+| SpnEn (Z+/Z-)    | D11     | index Hall sensor's supply (the pin sources about 20 mA; the 3144 draws under 10) |
 | 5V / GND         | -       | turn counter (Hall sensor and display)               |
-| 12-36 V terminal | -       | 24 V supply                                          |
+| 12-36 V terminal | -       | 24 V supply; a small 24 → 12 V buck feeds the solenoid |
 
 ## Bring-up
 
@@ -214,7 +259,9 @@ the wire stays at spindle height (80):
 5. Send `G38.2 Y-20 F120` with the guide a few mm from the switch: it stops
    on the switch and GRBL prints a `[PRB:...]` line. If it errors at once,
    a switch is wired normally-closed or `$6` is wrong. Press the feeler by
-   hand during a slow `G38.2`: it must stop the move too.
+   hand during a slow `G38.2`: it must stop the move too. Send `M8` and
+   `M9`: the feeler drops and lifts. Pull the dancer to each stop while
+   jogging slowly: GRBL must go to Hold.
 6. Set the eyelet level with the axis (height clamp) and 48 mm behind it
    (cross-slide), with the laser line on the flange faces as a check.
 7. Run the flange finder for each bobbin type you wind.
@@ -224,9 +271,11 @@ the wire stays at spindle height (80):
 
 ## Cheaper build
 
-About 820 lei instead of about 1,120 (about 700 if you borrow the dial
+About 870 lei instead of about 1,160 (about 750 if you borrow the dial
 indicator and the spring scale): two 8 mm rods and LM8UU bearings in place
 of the MGN12 rail, PETG for the headstock frame, carriage plate and brackets,
 and a dead 3D printer for both steppers, the lead screw and the supply. Keep
 the flange finder, the cross-slide, the ceramic guides and the two spindle
-bearings; they are what make the coil accurate.
+bearings; they are what make the coil accurate. To save another 38 lei, leave out the
+feeler solenoid and index sensor and calibrate with `--manual`; keep the
+dancer switches, they are what saves a coil when the wire snags.

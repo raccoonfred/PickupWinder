@@ -69,6 +69,10 @@ enum Cmd {
         /// Feeler blade thickness along the traverse (mm).
         #[arg(long, default_value_t = 0.5)]
         feeler: f64,
+        /// Stop for you to turn the bobbin and swing the feeler, for a
+        /// machine without the feeler solenoid and index sensor.
+        #[arg(long)]
+        manual: bool,
         /// GRBL's console output from the probing run, or just its three
         /// [PRB:...] lines.
         #[arg(long)]
@@ -123,6 +127,14 @@ fn run(cmd: Cmd) -> Res {
             let out = out.unwrap_or_else(|| design.with_extension("nc"));
             fs::write(&out, &g).map_err(|e| format!("{}: {e}", out.display()))?;
             let st = tp.stats();
+            let wire = d.wire_spec().map_err(|e| e.to_string())?;
+            let e = estimate(d.total_turns(), &d.bobbin, &wire, &d.estimate);
+            if e.break_warning() {
+                println!(
+                    "warning: tension is {:.0}% of the wire's breaking force; keep it under 70%",
+                    e.break_risk * 100.0
+                );
+            }
             println!(
                 "wrote {}: {} lines, {} turns, {} passes, about {:.1} min (verified)",
                 out.display(),
@@ -181,6 +193,7 @@ fn run(cmd: Cmd) -> Res {
             design,
             machine,
             feeler,
+            manual,
             probes,
             out,
         } => {
@@ -188,11 +201,11 @@ fn run(cmd: Cmd) -> Res {
             let mut profile = machine_profile(machine.as_deref())?;
             let stem = design.with_extension("");
             let Some(probes) = probes else {
-                let g = flange_program(&d, &profile, feeler).map_err(|e| e.to_string())?;
+                let g = flange_program(&d, &profile, feeler, !manual).map_err(|e| e.to_string())?;
                 let out = out.unwrap_or_else(|| suffixed(&stem, "-flanges.nc"));
                 fs::write(&out, g).map_err(|e| format!("{}: {e}", out.display()))?;
                 println!(
-                    "wrote {}: send it with the bobbin mounted, then run\n  winder calibrate {} --probes \"<the three [PRB:...] lines>\"",
+                    "wrote {}: send it with the bobbin mounted, then run\n  winder calibrate {} --probes \"<GRBL's output>\"",
                     out.display(),
                     design.display()
                 );

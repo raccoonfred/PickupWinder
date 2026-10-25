@@ -26,6 +26,9 @@ ref,group,part,spec,qty,unit_lei,line_lei,where_to_buy
 20,Calibration,Height clamp + scale,"printed clamp, 100 mm steel rule strip",1,8,8,"print, Dedeman"
 21,Calibration,Laser line,"5 V red 650 nm line module, 12 mm",1,12,12,Optimus Digital
 22,Calibration,Turn counter,"A3144 Hall sensor, 6×2 mm magnet, LCD pulse counter module",1,30,30,"Optimus Digital, AliExpress"
+28,Calibration,Feeler solenoid,"JF-0530B-type 12 V push solenoid, MOSFET module, 24→12 V buck",1,35,35,"Optimus Digital, AliExpress"
+29,Calibration,Index sensor,"second A3144 Hall sensor, powered from D11, output to the probe pin",1,3,3,Optimus Digital
+30,Calibration,Dancer limit switches,"2 subminiature microswitches with rollers, NO, on Hold with the pedal",2,4,8,Optimus Digital
 ,Calibration,Alignment tools,"8 mm ground test bar 150 mm, 0.01 mm dial indicator + magnetic base",1,90,90,"eMAG, Dedeman"
 ,Calibration,Tension gauge,0-100 g pocket spring scale,1,30,30,eMAG
 23,Wire path and frame,Felt tensioner,"2 felt pads, compression spring, M5 thumb screw",1,15,15,"Dedeman, craft shop"
@@ -35,4 +38,4 @@ ref,group,part,spec,qty,unit_lei,line_lei,where_to_buy
 26,Wire path and frame,Baseboard,"18 mm birch ply 480×340, 4 rubber feet",1,40,40,"Dedeman, Leroy Merlin"
 ,Wire path and frame,Screws and nuts,"M3, M4, M5 assortment, wood screws",1,30,30,Dedeman
 27,Consumable,Magnet wire,"42 AWG plain enamel, ~0.5 kg",1,100,100,"AliExpress, eBay (pickup wire)"
-,,Machine total without wire,,,,1116,
+,,Machine total without wire,,,,1162,
